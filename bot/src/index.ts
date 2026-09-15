@@ -57,8 +57,11 @@ function wireCommands(bot: AnyBot, cfg: BotConfig): void {
     const text = String(event.raw_message ?? '').trim();
     if (!text || !openid) return;
     if (!isAllowed(cfg, openid)) {
+      console.warn(JSON.stringify({ msg: 'denied user', openid }));
       try {
-        await event.reply('未授权：请联系管理员将你的 openid 加入 allowUsers。');
+        await event.reply(
+          `未授权：请管理员把下面这串 openid 写入 config.yaml 的 qqofficial.allowUsers 后重启 bot。\n你的 openid：\n${openid}`,
+        );
       } catch {
         /* ignore */
       }
