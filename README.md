@@ -1,6 +1,6 @@
 # 到手价监控（price-watch）
 
-个人用的 **京东 / 淘宝 / 拼多多**「到手价」监控：**QQ 官方开放平台 Bot**（好友私聊命令）为主，本机 **localhost Web** 仅调试/管理。
+个人用的 **京东 / 淘宝 / 拼多多**「到手价」监控：**QQ 官方开放平台 Bot**（好友私聊命令）为主，服务器上的 **Web 管理页**（调试用，请加 ADMIN_TOKEN）。
 
 > **诚实声明**：自动抓取可能违反电商平台服务条款，且接口随时失效；本项目仅供个人学习与自用，**不保证**价格准确性或抓取成功率。淘宝/拼多多默认需手动更新价格。
 
@@ -8,7 +8,7 @@
 
 | 服务 | 职责 | 网络 |
 |------|------|------|
-| `app`（Python FastAPI） | SQLite、调度抓价、调试 Web、内部 REST `/api/bot/*` | 仅 `127.0.0.1:8080` |
+| `app`（Python FastAPI） | SQLite、调度抓价、调试 Web、内部 REST `/api/bot/*` | 宿主机 `8080`（可用 `WEB_PORT` 改） |
 | `bot`（Node + `qq-official-bot`） | QQ 官方 **WebSocket 出站**、私聊命令、主动推送告警 | **无对外端口** |
 
 告警只推送给监控的归属用户（`owner_openid`）。
@@ -20,7 +20,7 @@
 QQ 官方开放平台在 **WebSocket** 模式下由机器人**主动出站**连接腾讯网关，因此：
 
 - **不需要**把 webhook 暴露到公网
-- `docker-compose` 只把 Web 绑在 `127.0.0.1:8080`（本机调试）
+- `docker-compose` 默认把 Web 映射到宿主机 `8080`（远程用 `http://服务器IP:8080`）；Bot 无入站端口
 - `bot` 服务不发布任何 ports
 
 ## 创建 QQ 开放平台机器人
@@ -83,8 +83,8 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-- 调试 UI：http://127.0.0.1:8080 （仅本机）
-- 健康检查：http://127.0.0.1:8080/health
+- 调试 UI：http://服务器IP:8080 （请设置 `ADMIN_TOKEN`）
+- 健康检查：http://服务器IP:8080/health
 - 数据：`./data`（SQLite）
 
 日常用户**只用 QQ**；Web 可查看全部监控（含各用户 `owner_openid`）。
@@ -97,7 +97,7 @@ python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml
 mkdir -p data
-uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
+uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 # Bot（另开终端；需本机可访问 App）
 cd bot && npm install && npm run dev
@@ -118,7 +118,7 @@ qqofficial:
   allowAll: false
 
 web:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8080
 
 onebot:

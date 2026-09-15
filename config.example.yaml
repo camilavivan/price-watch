@@ -8,9 +8,10 @@ adminToken: ""
 # 数据库（也可由环境变量 DATABASE_URL 覆盖）
 databaseUrl: "sqlite+aiosqlite:///./data/pricewatch.db"
 
-# 调试 Web（compose 仅发布 127.0.0.1:8080）
+# 调试/管理 Web（compose 默认映射宿主机 8080；容器内监听 0.0.0.0）
+# 远程访问时请设置 adminToken 或环境变量 ADMIN_TOKEN
 web:
-  host: 127.0.0.1
+  host: 0.0.0.0
   port: 8080
 
 # 调度器

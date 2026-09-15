@@ -22,8 +22,8 @@ class AlertsConfig(BaseModel):
 
 
 class WebConfig(BaseModel):
-    """Debug/admin UI — publish only on localhost via docker-compose."""
-    host: str = "127.0.0.1"
+    """Debug/admin UI — listen all interfaces; protect with ADMIN_TOKEN when exposed."""
+    host: str = "0.0.0.0"
     port: int = 8080
 
 
