@@ -1,0 +1,39 @@
+# price-watch 配置示例 — 复制为 config.yaml 后修改
+
+# 管理端鉴权：留空则本机无鉴权；设置后需 Cookie/Header: X-Admin-Token
+adminToken: ""
+
+# 数据库（也可由环境变量 DATABASE_URL 覆盖）
+databaseUrl: "sqlite+aiosqlite:///./data/pricewatch.db"
+
+# 调度器
+scheduler:
+  # 全局默认检查间隔（分钟）；商品可单独覆盖
+  defaultIntervalMinutes: 60
+  # 启动后延迟多少秒开始第一次扫描
+  startupDelaySeconds: 10
+
+# 到手价告警默认规则（商品可覆盖）
+alerts:
+  # 低于目标价时告警
+  onBelowTarget: true
+  # 相对上次到手价下降百分比（0 表示关闭）
+  dropPercent: 5
+  # 相对上次到手价下降金额（元，0 表示关闭）
+  dropYuan: 0
+
+# OneBot v11（NapCat / go-cqhttp / Lagrange）
+onebot:
+  enabled: true
+  # Docker → 宿主机 OneBot：http://host.docker.internal:5700
+  # Docker → 同 compose 网络：http://napcat:5700
+  apiBase: "http://host.docker.internal:5700"
+  accessToken: ""         # 可选，API 鉴权 token
+  notifyGroups: []        # 群号列表，如 [123456789]
+  notifyUsers: []         # QQ 号列表，如 [10001]
+
+# 企业微信群机器人 Webhook
+# 个人微信无官方 Bot API，请使用企业微信群机器人
+wecom:
+  enabled: false
+  webhookUrl: ""          # 或环境变量 WECOM_WEBHOOK_URL

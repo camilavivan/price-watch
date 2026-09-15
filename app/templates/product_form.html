@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — 到手价监控{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>{{ title }}</h1>
+  <form class="grid" method="post" action="{% if product %}/products/{{ product.id }}/edit{% else %}/products/new{% endif %}">
+    <div>
+      <label for="name">商品名称 *</label>
+      <input type="text" id="name" name="name" required value="{{ product.name if product else '' }}" />
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="platform">平台 *</label>
+        <select id="platform" name="platform" required>
+          {% for code, label in platforms %}
+          <option value="{{ code }}" {% if product and product.platform == code %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="sku_id">SKU ID（可选，京东建议填）</label>
+        <input type="text" id="sku_id" name="sku_id" value="{{ product.sku_id if product and product.sku_id else '' }}" />
+      </div>
+    </div>
+    <div>
+      <label for="url">商品链接</label>
+      <input type="url" id="url" name="url" placeholder="https://item.jd.com/xxxx.html" value="{{ product.url if product else '' }}" />
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="list_price">标价 / 原价（元）</label>
+        <input type="number" step="0.01" id="list_price" name="list_price" value="{{ product.list_price if product and product.list_price is not none else '' }}" />
+      </div>
+      <div>
+        <label for="target_price">目标到手价（元）</label>
+        <input type="number" step="0.01" id="target_price" name="target_price" value="{{ product.target_price if product and product.target_price is not none else '' }}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="coupon_amount">券面额（元）</label>
+        <input type="number" step="0.01" id="coupon_amount" name="coupon_amount" value="{{ product.coupon_amount if product else 0 }}" />
+        <p class="hint">自动解析失败时手动填写</p>
+      </div>
+      <div>
+        <label for="full_reduction">满减估算（元）</label>
+        <input type="number" step="0.01" id="full_reduction" name="full_reduction" value="{{ product.full_reduction if product else 0 }}" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="rebate_estimate">返利估算（元，仅展示，不计入到手价）</label>
+        <input type="number" step="0.01" id="rebate_estimate" name="rebate_estimate" value="{{ product.rebate_estimate if product else 0 }}" />
+      </div>
+      <div>
+        <label for="check_interval_minutes">检查间隔（分钟，空=全局默认）</label>
+        <input type="number" id="check_interval_minutes" name="check_interval_minutes" min="1" value="{{ product.check_interval_minutes if product and product.check_interval_minutes is not none else '' }}" />
+      </div>
+    </div>
+    <div>
+      <label for="note">备注</label>
+      <textarea id="note" name="note" rows="2">{{ product.note if product and product.note else '' }}</textarea>
+    </div>
+    <label class="check">
+      <input type="checkbox" name="enabled" value="1" {% if not product or product.enabled %}checked{% endif %} />
+      启用监控
+    </label>
+    <p class="hint">到手价 = 标价 − 券面额 − 满减估算（返利单独展示，不扣减）</p>
+    <div class="row">
+      <button class="btn" type="submit">保存</button>
+      <a class="btn secondary" href="{% if product %}/products/{{ product.id }}{% else %}/{% endif %}">取消</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

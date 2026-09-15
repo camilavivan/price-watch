@@ -1,0 +1,112 @@
+:root {
+  --bg: #f4f7f4;
+  --card: #fff;
+  --green: #1a7f4b;
+  --green-dark: #0f5c36;
+  --green-soft: #e8f5ee;
+  --border: #d5e3d9;
+  --text: #1a2e22;
+  --muted: #5a7264;
+  --danger: #c0392b;
+  --warn: #d68910;
+  --radius: 10px;
+  --shadow: 0 2px 8px rgba(26, 127, 75, 0.08);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+}
+a { color: var(--green); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 980px; margin: 0 auto; padding: 1.25rem; }
+header.appbar {
+  background: linear-gradient(135deg, var(--green), var(--green-dark));
+  color: #fff;
+  padding: 0.9rem 0;
+  box-shadow: var(--shadow);
+}
+header.appbar .wrap {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+}
+header.appbar a { color: #fff; }
+.brand { font-weight: 700; font-size: 1.15rem; letter-spacing: 0.02em; }
+.brand span { opacity: 0.85; font-weight: 400; font-size: 0.85rem; margin-left: 0.5rem; }
+.nav { display: flex; gap: 0.75rem; align-items: center; font-size: 0.9rem; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+  box-shadow: var(--shadow);
+}
+h1, h2, h3 { margin: 0 0 0.75rem; color: var(--green-dark); }
+.muted { color: var(--muted); font-size: 0.9rem; }
+.btn {
+  display: inline-block;
+  background: var(--green);
+  color: #fff !important;
+  border: none;
+  border-radius: 8px;
+  padding: 0.45rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+  text-decoration: none !important;
+}
+.btn:hover { background: var(--green-dark); }
+.btn.secondary { background: #fff; color: var(--green) !important; border: 1px solid var(--green); }
+.btn.danger { background: var(--danger); }
+.btn.sm { padding: 0.25rem 0.55rem; font-size: 0.8rem; }
+.row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+th, td { padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  background: var(--green-soft);
+  color: var(--green-dark);
+}
+.badge.warn { background: #fef5e7; color: var(--warn); }
+.badge.off { background: #eee; color: #777; }
+.badge.err { background: #fdecea; color: var(--danger); }
+.price { font-weight: 700; color: var(--green-dark); font-size: 1.05rem; }
+.price.big { font-size: 1.6rem; }
+form.grid { display: grid; gap: 0.75rem; }
+label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.2rem; }
+input[type=text], input[type=number], input[type=url], input[type=password], select, textarea {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 0.95rem;
+  background: #fff;
+}
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--green-soft);
+  border-color: var(--green);
+}
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+@media (max-width: 640px) { .form-row { grid-template-columns: 1fr; } }
+.hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.2rem; }
+.error { color: var(--danger); background: #fdecea; padding: 0.6rem 0.8rem; border-radius: 8px; }
+.spark {
+  display: flex; align-items: flex-end; gap: 2px; height: 40px; margin: 0.5rem 0 1rem;
+}
+.spark i {
+  display: block; width: 6px; background: var(--green); border-radius: 2px 2px 0 0; opacity: 0.85;
+  min-height: 2px;
+}
+.meta-list { list-style: none; padding: 0; margin: 0; }
+.meta-list li { padding: 0.25rem 0; border-bottom: 1px dashed var(--border); font-size: 0.9rem; }
+footer.site {
+  text-align: center; color: var(--muted); font-size: 0.8rem; padding: 1.5rem 1rem 2rem;
+}
+.check { display: flex; align-items: center; gap: 0.4rem; }
+.check input { width: auto; }

@@ -1,0 +1,43 @@
+# price-watch — 到手价监控
+# 用法：cp config.example.yaml config.yaml && cp .env.example .env
+#       docker compose up -d --build
+
+services:
+  web:
+    build: .
+    image: price-watch:latest
+    container_name: price-watch
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    # 若已有 .env，取消下一行注释：
+    # env_file:
+    #   - .env
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-}
+      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/pricewatch.db}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    # 若 OneBot 在同 compose 网络，取消下面 depends_on，并把 config 中
+    # onebot.apiBase 设为 http://napcat:5700
+    # depends_on:
+    #   - napcat
+
+  # napcat:
+  #   image: mlikiowa/napcat-docker:latest
+  #   container_name: napcat
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5700:5700"

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}商品列表 — 到手价监控{% endblock %}
+{% block content %}
+<div class="row" style="justify-content:space-between;margin-bottom:1rem;">
+  <div>
+    <h1 style="margin:0;">监控商品</h1>
+    <p class="muted" style="margin:0.25rem 0 0;">
+      QQ 推送：{% if onebot_enabled %}<span class="badge">OneBot 已启用</span>{% else %}<span class="badge off">未启用</span>{% endif %}
+      · 企微：{% if wecom_enabled %}<span class="badge">Webhook 已启用</span>{% else %}<span class="badge off">未启用</span>{% endif %}
+    </p>
+  </div>
+  <a class="btn" href="/products/new">＋ 添加商品</a>
+</div>
+
+<div class="card">
+  {% if not products %}
+  <p class="muted">暂无商品。点击「添加商品」开始监控。</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>名称</th>
+        <th>平台</th>
+        <th>到手价</th>
+        <th>目标价</th>
+        <th>状态</th>
+        <th>操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td><a href="/products/{{ p.id }}">{{ p.name }}</a></td>
+        <td>
+          {% if p.platform == 'jd' %}京东
+          {% elif p.platform == 'taobao' %}淘宝
+          {% elif p.platform == 'pdd' %}拼多多
+          {% else %}{{ p.platform }}{% endif %}
+        </td>
+        <td class="price">{% if p.landing_price is not none %}¥{{ '%.2f'|format(p.landing_price) }}{% else %}—{% endif %}</td>
+        <td>{% if p.target_price is not none %}¥{{ '%.2f'|format(p.target_price) }}{% else %}—{% endif %}</td>
+        <td>
+          {% if not p.enabled %}<span class="badge off">已停用</span>
+          {% elif p.needs_manual %}<span class="badge warn">需手动更新</span>
+          {% else %}<span class="badge">自动</span>{% endif %}
+        </td>
+        <td class="row">
+          <a class="btn sm secondary" href="/products/{{ p.id }}">详情</a>
+          <a class="btn sm secondary" href="/products/{{ p.id }}/edit">编辑</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>平台说明</h3>
+  <ul class="meta-list">
+    <li><strong>京东</strong>：尽力通过公开价格接口拉取标价；失败时可手动更新；券/满减需自行填写。</li>
+    <li><strong>淘宝 / 拼多多</strong>：无稳定公开接口，标记为「需手动更新」。</li>
+  </ul>
+</div>
+{% endblock %}

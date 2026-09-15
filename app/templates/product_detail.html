@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}{{ product.name }} — 到手价监控{% endblock %}
+{% block content %}
+<div class="row" style="justify-content:space-between;margin-bottom:0.75rem;">
+  <h1 style="margin:0;">{{ product.name }}</h1>
+  <div class="row">
+    <a class="btn secondary" href="/products/{{ product.id }}/edit">编辑</a>
+    <form method="post" action="/products/{{ product.id }}/check" style="display:inline;">
+      <button class="btn" type="submit">立即检查</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="form-row">
+    <div>
+      <p class="muted" style="margin:0;">到手价</p>
+      <p class="price big" style="margin:0.2rem 0;">
+        {% if product.landing_price is not none %}¥{{ '%.2f'|format(product.landing_price) }}{% else %}—{% endif %}
+      </p>
+      {% if product.rebate_estimate %}
+      <p class="muted">返利估算（另计）：¥{{ '%.2f'|format(product.rebate_estimate) }}</p>
+      {% endif %}
+    </div>
+    <div>
+      <ul class="meta-list">
+        <li>平台：
+          {% if product.platform == 'jd' %}京东
+          {% elif product.platform == 'taobao' %}淘宝/天猫
+          {% elif product.platform == 'pdd' %}拼多多
+          {% else %}{{ product.platform }}{% endif %}
+          {% if not adapter.supports_auto %}<span class="badge warn">需手动更新</span>{% endif %}
+        </li>
+        <li>标价：{% if product.list_price is not none %}¥{{ '%.2f'|format(product.list_price) }}{% else %}—{% endif %}</li>
+        <li>券面额：¥{{ '%.2f'|format(product.coupon_amount or 0) }} · 满减：¥{{ '%.2f'|format(product.full_reduction or 0) }}</li>
+        <li>目标价：{% if product.target_price is not none %}¥{{ '%.2f'|format(product.target_price) }}{% else %}未设{% endif %}</li>
+        <li>状态：{% if product.enabled %}启用{% else %}停用{% endif %}
+          {% if product.needs_manual %}· <span class="badge warn">需手动</span>{% endif %}
+        </li>
+        <li>上次检查：{{ product.last_check_at or '—' }}</li>
+        {% if product.url %}<li>链接：<a href="{{ product.url }}" target="_blank" rel="noopener">打开商品页</a></li>{% endif %}
+        {% if product.last_error %}<li class="badge err">{{ product.last_error }}</li>{% endif %}
+        {% if product.note %}<li>备注：{{ product.note }}</li>{% endif %}
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>更新价格</h2>
+  <p class="muted">填写标价与优惠后自动计算到手价；也可直接填到手价覆盖。</p>
+  <form class="grid" method="post" action="/products/{{ product.id }}/update-price">
+    <div class="form-row">
+      <div>
+        <label for="list_price">标价</label>
+        <input type="number" step="0.01" name="list_price" id="list_price" value="{{ product.list_price if product.list_price is not none else '' }}" />
+      </div>
+      <div>
+        <label for="landing_price">到手价（可选覆盖）</label>
+        <input type="number" step="0.01" name="landing_price" id="landing_price" placeholder="留空则自动计算" />
+      </div>
+    </div>
+    <div class="form-row">
+      <div>
+        <label for="coupon_amount">券面额</label>
+        <input type="number" step="0.01" name="coupon_amount" id="coupon_amount" value="{{ product.coupon_amount or 0 }}" />
+      </div>
+      <div>
+        <label for="full_reduction">满减估算</label>
+        <input type="number" step="0.01" name="full_reduction" id="full_reduction" value="{{ product.full_reduction or 0 }}" />
+      </div>
+    </div>
+    <div>
+      <label for="rebate_estimate">返利估算</label>
+      <input type="number" step="0.01" name="rebate_estimate" id="rebate_estimate" value="{{ product.rebate_estimate or 0 }}" />
+    </div>
+    <button class="btn" type="submit">保存并检查告警</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>价格历史</h2>
+  {% if spark and spark|length > 1 %}
+  {% set mx = spark|max %}
+  {% set mn = spark|min %}
+  {% set span = (mx - mn) if (mx - mn) > 0 else 1 %}
+  <div class="spark" title="最近 {{ spark|length }} 次到手价">
+    {% for v in spark %}
+    <i style="height: {{ (((v - mn) / span) * 36 + 4)|round(0) }}px" title="¥{{ '%.2f'|format(v) }}"></i>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if not history %}
+  <p class="muted">暂无历史记录</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>时间</th>
+        <th>到手价</th>
+        <th>标价</th>
+        <th>券/满减</th>
+        <th>来源</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for h in history %}
+      <tr>
+        <td>{{ h.recorded_at }}</td>
+        <td class="price">¥{{ '%.2f'|format(h.landing_price) }}</td>
+        <td>{% if h.list_price is not none %}¥{{ '%.2f'|format(h.list_price) }}{% else %}—{% endif %}</td>
+        <td>¥{{ '%.2f'|format(h.coupon_amount or 0) }} / ¥{{ '%.2f'|format(h.full_reduction or 0) }}</td>
+        <td>{% if h.source == 'manual' %}手动{% else %}检查{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <form method="post" action="/products/{{ product.id }}/delete" onsubmit="return confirm('确定删除该商品及其历史？');">
+    <button class="btn danger" type="submit">删除商品</button>
+  </form>
+</div>
+{% endblock %}

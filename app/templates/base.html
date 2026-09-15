@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}到手价监控{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="appbar">
+    <div class="wrap">
+      <a class="brand" href="/">到手价监控 <span>price-watch</span></a>
+      <nav class="nav">
+        <a href="/">商品列表</a>
+        <a href="/products/new">添加商品</a>
+        {% if auth_required %}
+          {% if authed %}<a href="/logout">退出</a>{% else %}<a href="/login">登录</a>{% endif %}
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site">
+    仅供个人监控使用 · 自动抓取可能违反平台条款且不稳定 · 无任何价格保证
+  </footer>
+</body>
+</html>
