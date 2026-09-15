@@ -16,7 +16,12 @@ from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
 from app.services import check_watch, compute_local_history_stats, sparkline
-from app.url_normalize import UnknownPlatformError, guess_name_from_url, normalize_url
+from app.url_normalize import (
+    UnknownPlatformError,
+    guess_name_from_url,
+    normalize_url,
+    resolve_url,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/bot", tags=["bot"])
@@ -140,8 +145,10 @@ async def create_watch(
 ):
     openid = body.openid.strip()
     raw_url = body.url.strip()
+    # Expand short links (3.jd.hk / m.tb.cn / …) before normalize / sku extract
+    resolved = await resolve_url(raw_url)
     try:
-        info = normalize_url(raw_url, require_known_platform=True)
+        info = normalize_url(resolved, require_known_platform=True)
     except UnknownPlatformError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -149,26 +156,32 @@ async def create_watch(
     if platform not in ("jd", "taobao", "pdd"):
         raise HTTPException(
             status_code=400,
-            detail="无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接",
+            detail=(
+                "无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接"
+                "（支持短链：m.tb.cn、tb.cn、u.jd.com、3.cn、3.jd.hk、"
+                "p.pinduoduo.com 等，短链会自动跳转展开）"
+            ),
         )
 
     canonical = info.canonical_url
     sku = info.sku_id
-    store_url = canonical or raw_url
+    store_url = canonical or resolved or raw_url
 
     existing = await _find_existing(
         db,
         openid,
         platform=platform,
         sku_id=sku,
-        url=raw_url,
+        url=resolved or raw_url,
         canonical_url=canonical,
     )
     if existing:
         raise HTTPException(status_code=409, detail="你已监控该商品")
 
     adapter = get_adapter(platform)
-    name = (body.name or "").strip() or guess_name_from_url(raw_url, platform)
+    name = (body.name or "").strip() or guess_name_from_url(
+        canonical or resolved or raw_url, platform
+    )
     product = Product(
         name=name,
         platform=platform,

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 # Tracking / affiliate / share junk to drop from query strings
 _STRIP_QUERY_PREFIXES = (
@@ -85,6 +90,26 @@ _KEEP_QUERY = frozenset(
     }
 )
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+)
+
+# Trailing punctuation glued to URLs in QQ / WeChat share pastes
+_TRAILING_URL_JUNK = re.compile(r"[）)」』】\"'“”‘’。，、！？!?,.;:\]\}>]+$")
+
+# Stop at whitespace, CJK, or common wrappers — share pastes glue junk to URLs
+_URL_IN_TEXT = re.compile(
+    r"https?://[^\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef<>\"\'）)」』】\[\]{}|\\^`]+",
+    re.I,
+)
+
+UNKNOWN_PLATFORM_MSG = (
+    "无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接"
+    "（支持短链：m.tb.cn、tb.cn、u.jd.com、3.cn、3.jd.hk、p.pinduoduo.com 等，"
+    "短链会自动跳转展开）"
+)
+
 
 @dataclass(frozen=True)
 class NormalizedURL:
@@ -105,8 +130,31 @@ class UnknownPlatformError(ValueError):
     """URL host is not jd / taobao|tmall / pdd."""
 
 
-def _ensure_scheme(url: str) -> str:
+def strip_url_trailing_junk(url: str) -> str:
+    """Remove trailing punctuation often copied with share links."""
     u = (url or "").strip()
+    prev = None
+    while prev != u:
+        prev = u
+        u = _TRAILING_URL_JUNK.sub("", u)
+    return u
+
+
+def extract_first_url(text: str) -> Optional[str]:
+    """Extract first http(s) URL from free text; strip trailing junk."""
+    if not text:
+        return None
+    m = _URL_IN_TEXT.search(text)
+    if not m:
+        return None
+    url = strip_url_trailing_junk(m.group(0))
+    if not re.match(r"^https?://.+", url, re.I):
+        return None
+    return url
+
+
+def _ensure_scheme(url: str) -> str:
+    u = strip_url_trailing_junk(url or "")
     if not u:
         return ""
     if not re.match(r"^https?://", u, re.I):
@@ -114,19 +162,43 @@ def _ensure_scheme(url: str) -> str:
     return u
 
 
+def _host_of(url: str) -> str:
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    return host.split("@")[-1].split(":")[0]
+
+
 def detect_platform(url: str) -> Optional[str]:
-    """Detect platform from host: jd / taobao / pdd."""
+    """Detect platform from host: jd / taobao / pdd (incl. short-link hosts)."""
     u = _ensure_scheme(url)
     if not u:
         return None
-    try:
-        host = urlparse(u).netloc.lower()
-    except Exception:
+    host = _host_of(u)
+    if not host:
         return None
-    # strip port
-    host = host.split("@")[-1].split(":")[0]
-    if host.endswith(".jd.com") or host == "jd.com" or host.endswith(".jd.hk") or host == "jd.hk":
+
+    # --- JD (incl. short links) ---
+    # u.jd.com, 3.jd.com, 3.jd.hk, item.jd.com, numeric *.jd.hk, bare 3.cn
+    if (
+        host == "3.cn"
+        or host == "jd.com"
+        or host == "jd.hk"
+        or host.endswith(".jd.com")
+        or host.endswith(".jd.hk")
+    ):
         return "jd"
+
+    # --- Taobao / Tmall short + long ---
+    if host in (
+        "m.tb.cn",
+        "tb.cn",
+        "e.tb.cn",
+        "s.tb.cn",
+        "a.m.taobao.com",
+    ) or host.endswith(".tb.cn"):
+        return "taobao"
     if (
         host.endswith(".taobao.com")
         or host == "taobao.com"
@@ -135,16 +207,57 @@ def detect_platform(url: str) -> Optional[str]:
         or host.endswith(".tmall.hk")
         or host == "tmall.hk"
         or host.endswith(".liangxinyao.com")  # some tmall brand stores
+        or host == "s.click.taobao.com"
+        or host.endswith(".click.taobao.com")
+        or host.endswith(".click.tmall.com")
     ):
         return "taobao"
+
+    # --- PDD ---
     if (
         host.endswith(".pinduoduo.com")
         or host == "pinduoduo.com"
         or host.endswith(".yangkeduo.com")
         or host == "yangkeduo.com"
+        or host == "p.pinduoduo.com"
     ):
         return "pdd"
+
     return None
+
+
+def is_short_link(url: str) -> bool:
+    """Whether URL looks like a share/short link that should be HTTP-expanded."""
+    u = _ensure_scheme(url)
+    host = _host_of(u)
+    if not host:
+        return False
+    short_exact = {
+        "3.cn",
+        "m.tb.cn",
+        "tb.cn",
+        "e.tb.cn",
+        "s.tb.cn",
+        "u.jd.com",
+        "3.jd.com",
+        "3.jd.hk",
+        "a.m.taobao.com",
+        "p.pinduoduo.com",
+        "s.click.taobao.com",
+    }
+    if host in short_exact or host.endswith(".tb.cn"):
+        return True
+    # numeric subdomain short paths on jd.hk e.g. 3.jd.hk already covered;
+    # also u*.jd.com shortener-style hosts without item path
+    if host.endswith(".jd.hk") and not host.startswith("item."):
+        path = urlparse(u).path or ""
+        if not re.search(r"/\d+\.html", path, re.I):
+            return True
+    if host in ("u.jd.com",) or (host.endswith(".jd.com") and host.startswith("u")):
+        return True
+    if "click.taobao.com" in host or "click.tmall.com" in host:
+        return True
+    return False
 
 
 def _should_strip_query_key(key: str) -> bool:
@@ -261,9 +374,47 @@ def _canonical_for(platform: str, sku_id: Optional[str], cleaned: str) -> str:
     return cleaned
 
 
+async def resolve_url(url: str) -> str:
+    """
+    Follow HTTP redirects to the final URL (for short links like 3.jd.hk / m.tb.cn).
+
+    Uses browser UA, ~15s timeout. On failure returns the cleaned original URL.
+    """
+    original = (url or "").strip()
+    ensured = _ensure_scheme(original)
+    if not ensured:
+        return original
+
+    headers = {
+        "User-Agent": _BROWSER_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=True,
+            max_redirects=15,
+            headers=headers,
+        ) as client:
+            # HEAD first is flaky on some CDNs; GET is more reliable for short links
+            resp = await client.get(ensured)
+            final = str(resp.url)
+            final = strip_url_trailing_junk(final)
+            if final:
+                logger.debug("resolve_url %s -> %s", ensured, final)
+                return final
+    except Exception as e:
+        logger.warning("resolve_url failed for %s: %s", ensured, e)
+    return ensured
+
+
 def normalize_url(url: str, *, require_known_platform: bool = False) -> NormalizedURL:
     """
-    Expand/clean URL → extract sku_id → store canonical_url.
+    Clean URL → extract sku_id → store canonical_url.
+
+    Accepts already-resolved (redirect-expanded) URLs. Call resolve_url() first
+    for short links in create-watch flows.
 
     Returns {platform, sku_id, canonical_url} (+ original_url).
     Raises UnknownPlatformError if require_known_platform and host unknown.
@@ -272,9 +423,7 @@ def normalize_url(url: str, *, require_known_platform: bool = False) -> Normaliz
     ensured = _ensure_scheme(original)
     platform = detect_platform(ensured)
     if require_known_platform and platform is None:
-        raise UnknownPlatformError(
-            "无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接"
-        )
+        raise UnknownPlatformError(UNKNOWN_PLATFORM_MSG)
 
     cleaned = strip_tracking_params(ensured) if ensured else ""
     sku_id: Optional[str] = None

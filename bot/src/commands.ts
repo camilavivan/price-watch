@@ -16,13 +16,21 @@ const HELP = `【到手价监控】命令
 历史 <id> — 近期到手价 + 自采统计/走势
 详情 <id> — 链接与到手价明细（也可写「详请」）
 
-说明：告警只推送给添加监控的你本人。历史最低来自本机自采记录（非第三方）。`;
+说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/粉丝福利购等），机器人会自动提取链接。
+告警只推送给添加监控的你本人。历史最低来自本机自采记录（非第三方）。`;
 
 const PLATFORM: Record<string, string> = {
   jd: '京东',
   taobao: '淘宝',
   pdd: '拼多多',
 };
+
+/** Trailing punctuation often glued to URLs in QQ share pastes */
+const TRAILING_URL_JUNK = /[）)」』】"'“”‘’。，、！？!?,.;:\]\}>]+$/u;
+
+/** Known commerce / short-link hosts (jd / taobao|tmall / pdd) */
+const COMMERCE_HOST_RE =
+  /(?:^|\.)(?:(?:\d+\.)?jd\.hk|jd\.com|u\.jd\.com|3\.cn|(?:m\.|e\.|s\.)?tb\.cn|a\.m\.taobao\.com|taobao\.com|tmall\.com|tmall\.hk|pinduoduo\.com|yangkeduo\.com)$/i;
 
 function fmtPrice(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '—';
@@ -38,6 +46,88 @@ function fmtStats(s: HistoryStats | null | undefined): string {
   ];
   if (s.sparkline) lines.push(`走势：${s.sparkline}`);
   return lines.join('\n');
+}
+
+/** Extract first http(s) URL; strip trailing punctuation from share pastes. */
+export function extractFirstUrl(text: string): string | null {
+  // Stop at whitespace, CJK, or common wrappers — share pastes glue junk to URLs
+  const m = text.match(
+    /https?:\/\/[^\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef<>"'）)」』】\[\]{}|\\^`]+/i,
+  );
+  if (!m) return null;
+  let url = m[0];
+  // Peel trailing junk repeatedly (e.g. ")。")
+  let prev = '';
+  while (url !== prev) {
+    prev = url;
+    url = url.replace(TRAILING_URL_JUNK, '');
+  }
+  if (!/^https?:\/\/.+/i.test(url)) return null;
+  return url;
+}
+
+export function isCommerceUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return COMMERCE_HOST_RE.test(host);
+  } catch {
+    return false;
+  }
+}
+
+function hasWatchKeyword(text: string): boolean {
+  return /监控|盯价|加监控/.test(text);
+}
+
+/** Optional target: 目标/目标价, or number right after URL when 监控-style. */
+export function extractTargetPrice(text: string, url?: string | null): number | undefined {
+  let m = text.match(/目标价?\s*[：:=\s]*(\d+(?:\.\d+)?)/);
+  if (m) return Number(m[1]);
+
+  if (url) {
+    const idx = text.indexOf(url);
+    if (idx >= 0) {
+      const after = text.slice(idx + url.length);
+      m = after.match(/^\s+(\d+(?:\.\d+)?)\s*元?\s*$/);
+      if (m) return Number(m[1]);
+      // Single trailing number on same/next fragment when keyword present
+      if (hasWatchKeyword(text)) {
+        m = after.match(/^\s+(\d+(?:\.\d+)?)\s*元?(?:\s|$)/);
+        if (m) return Number(m[1]);
+      }
+    }
+  }
+
+  // Classic clean command: 监控 <url> <price>
+  m = text.match(/(?:监控|盯价|加监控)\s+\S+\s+(\d+(?:\.\d+)?)\s*元?\s*$/);
+  if (m) return Number(m[1]);
+
+  return undefined;
+}
+
+async function doCreateWatch(
+  cfg: BotConfig,
+  openid: string,
+  url: string,
+  target?: number,
+): Promise<CommandResult> {
+  if (!/^https?:\/\//i.test(url)) {
+    return { text: '请提供以 http(s):// 开头的商品链接' };
+  }
+  try {
+    const w = await createWatch(cfg, openid, url, target);
+    return {
+      text:
+        `已添加监控 #${w.id}\n` +
+        `${w.name}\n` +
+        `平台：${PLATFORM[w.platform] || w.platform}\n` +
+        `到手价：${fmtPrice(w.landing_price)}\n` +
+        `目标价：${fmtPrice(w.target_price)}\n` +
+        (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。'),
+    };
+  } catch (e) {
+    return { text: `添加失败：${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 export type CommandResult = {
@@ -59,7 +149,9 @@ export async function handleCommand(
 
   if (text === '列表' || text === 'list') {
     const watches = await listWatches(cfg, openid);
-    if (!watches.length) return { text: '你还没有监控。发送：监控 <商品链接> [目标价]' };
+    if (!watches.length) {
+      return { text: '你还没有监控。发送：监控 <商品链接> [目标价]，或直接粘贴带链接的分享文案' };
+    }
     const lines = watches.map((w) => {
       const plat = PLATFORM[w.platform] || w.platform;
       return `#${w.id} [${plat}] ${w.name}\n  到手价 ${fmtPrice(w.landing_price)} · 目标 ${fmtPrice(w.target_price)}${w.needs_manual ? ' · 需手动' : ''}`;
@@ -67,30 +159,14 @@ export async function handleCommand(
     return { text: `你的监控（${watches.length}）\n` + lines.join('\n') };
   }
 
-  let m = text.match(/^监控\s+(\S+)(?:\s+(\d+(?:\.\d+)?))?$/);
-  if (m) {
-    const url = m[1];
-    const target = m[2] != null ? Number(m[2]) : undefined;
-    if (!/^https?:\/\//i.test(url)) {
-      return { text: '请提供以 http(s):// 开头的商品链接' };
-    }
-    try {
-      const w = await createWatch(cfg, openid, url, target);
-      return {
-        text:
-          `已添加监控 #${w.id}\n` +
-          `${w.name}\n` +
-          `平台：${PLATFORM[w.platform] || w.platform}\n` +
-          `到手价：${fmtPrice(w.landing_price)}\n` +
-          `目标价：${fmtPrice(w.target_price)}\n` +
-          (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。'),
-      };
-    } catch (e) {
-      return { text: `添加失败：${e instanceof Error ? e.message : String(e)}` };
-    }
+  // Watch: keyword + URL, or bare commerce URL (share paste)
+  const url = extractFirstUrl(text);
+  if (url && (hasWatchKeyword(text) || isCommerceUrl(url))) {
+    const target = extractTargetPrice(text, url);
+    return doCreateWatch(cfg, openid, url, target);
   }
 
-  m = text.match(/^取消\s+(\d+)$/);
+  let m = text.match(/^取消\s+(\d+)$/);
   if (m) {
     const id = Number(m[1]);
     try {
@@ -146,5 +222,5 @@ export async function handleCommand(
     }
   }
 
-  return { text: '未识别命令。发送「帮助」查看用法。' };
+  return { text: '未识别命令。发送「帮助」查看用法。可直接粘贴带链接的分享文案。' };
 }
