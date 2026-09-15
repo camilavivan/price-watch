@@ -32,17 +32,18 @@ class WebConfig(BaseModel):
 
 
 class QQOfficialConfig(BaseModel):
-    """QQ 官方开放平台（由 bot/ Node 服务消费；此处供文档与可选回写）。"""
+    """QQ 官方开放平台（由同容器内 Node bot 消费；此处供文档与可选回写）。"""
     enabled: bool = True
     appId: str = ""
     secret: str = ""
     sandbox: bool = False
     mode: str = "websocket"  # websocket only for no public port
     sendImages: bool = True
-    allowUsers: list[str] = Field(default_factory=list)
-    allowAll: bool = False
-    # Internal URL that Python uses to push alerts to the bot container
-    notifyUrl: str = "http://bot:8091/notify"
+    # Who can chat is gated in QQ Open Platform console (personal developer).
+    # App-level allowUsers/allowAll removed — always accept messages that reach the bot.
+    # Isolation remains via owner_openid on each watch.
+    # Internal URL: app → bot notify (same container → localhost)
+    notifyUrl: str = "http://127.0.0.1:8091/notify"
 
 
 class OneBotConfig(BaseModel):

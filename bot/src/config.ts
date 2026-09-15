@@ -8,8 +8,6 @@ export type BotConfig = {
   sandbox: boolean;
   mode: 'websocket' | 'webhook';
   sendImages: boolean;
-  allowUsers: string[];
-  allowAll: boolean;
   adminToken: string;
   appApiBase: string;
   notifyPort: number;
@@ -24,8 +22,6 @@ type YamlRoot = {
     sandbox?: boolean;
     mode?: string;
     sendImages?: boolean;
-    allowUsers?: string[];
-    allowAll?: boolean;
   };
 };
 
@@ -64,16 +60,9 @@ export function loadConfig(): BotConfig {
     sandbox: q.sandbox === true || process.env.QQ_BOT_SANDBOX === '1',
     mode: (q.mode === 'webhook' ? 'webhook' : 'websocket') as 'websocket' | 'webhook',
     sendImages,
-    allowUsers: Array.isArray(q.allowUsers) ? q.allowUsers.map(String) : [],
-    allowAll: q.allowAll === true,
     adminToken: (process.env.ADMIN_TOKEN || yaml.adminToken || '').trim(),
-    appApiBase: (process.env.APP_API_BASE || 'http://app:8080').replace(/\/$/, ''),
+    // Single-container default: talk to uvicorn on localhost
+    appApiBase: (process.env.APP_API_BASE || 'http://127.0.0.1:8080').replace(/\/$/, ''),
     notifyPort: Number(process.env.BOT_NOTIFY_PORT || 8091),
   };
-}
-
-export function isAllowed(cfg: BotConfig, openid: string): boolean {
-  if (cfg.allowAll) return true;
-  if (!cfg.allowUsers.length) return false;
-  return cfg.allowUsers.includes(openid);
 }

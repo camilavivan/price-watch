@@ -1,10 +1,10 @@
-# price-watch — 到手价监控（QQ 官方 Bot + 本机调试 Web）
+# price-watch — 到手价监控（单容器：FastAPI + QQ 官方 Bot）
 # 用法：cp config.example.yaml config.yaml && cp .env.example .env
-#       编辑 config.yaml 的 qqofficial.allowUsers，.env 填 QQ_BOT_APP_ID / QQ_BOT_SECRET
+#       在 QQ 开放平台后台手动添加可聊天用户；.env 填 QQ_BOT_APP_ID / QQ_BOT_SECRET
 #       docker compose up -d --build
 #
-# Web 默认发布到宿主机 8080（远程服务器可用 IP:8080 访问调试页）。
-# Bot 仍用 QQ WebSocket 出站，无入站端口。请务必设置 ADMIN_TOKEN。
+# 仅发布 Web 端口（默认宿主机 8080）。Bot 用 QQ WebSocket 出站，notify 仅容器内 localhost。
+# 请务必设置 ADMIN_TOKEN。
 
 services:
   app:
@@ -16,8 +16,9 @@ services:
         NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.cloud.tencent.com/pypi/simple}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-mirrors.cloud.tencent.com}
-    image: price-watch-app:latest
-    container_name: price-watch-app
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+    image: price-watch:latest
+    container_name: price-watch
     restart: unless-stopped
     ports:
       # 远程调试需要 0.0.0.0；若只想本机访问可改回 "127.0.0.1:8080:8080"
@@ -31,7 +32,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/pricewatch.db}
-      BOT_NOTIFY_URL: ${BOT_NOTIFY_URL:-http://bot:8091/notify}
+      # 单容器内本机互通
+      APP_API_BASE: ${APP_API_BASE:-http://127.0.0.1:8080}
+      BOT_NOTIFY_URL: ${BOT_NOTIFY_URL:-http://127.0.0.1:8091/notify}
+      BOT_NOTIFY_PORT: "8091"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -39,41 +43,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
-
-  bot:
-    build:
-      context: ./bot
-      args:
-        HTTP_PROXY: ${HTTP_PROXY:-}
-        HTTPS_PROXY: ${HTTPS_PROXY:-}
-        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
-    image: price-watch-bot:latest
-    container_name: price-watch-bot
-    restart: unless-stopped
-    # 无 ports：QQ 官方 WebSocket 出站连接，不需要公网入站
-    depends_on:
-      app:
-        condition: service_healthy
-    volumes:
-      - ./config.yaml:/app/config.yaml:ro
-    env_file:
-      - .env
-    environment:
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
-      APP_API_BASE: ${APP_API_BASE:-http://app:8080}
-      BOT_NOTIFY_PORT: "8091"
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:8091/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 30s
+      start_period: 25s

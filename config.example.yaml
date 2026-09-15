@@ -38,10 +38,12 @@ qqofficial:
   sandbox: false          # 首次联调可改 true
   mode: websocket         # 固定 websocket，不要用 webhook（否则要暴露端口）
   sendImages: true        # 告警/详情配图；失败回退纯文字
-  allowUsers: []          # 好友 openid 白名单；空且 allowAll=false 时拒绝所有人
-  allowAll: false         # 仅本地调试可 true；生产务必 false + 填 allowUsers
-  # app 容器推送告警到 bot（compose 默认 http://bot:8091/notify）
-  notifyUrl: "http://bot:8091/notify"
+  # allowUsers / allowAll：已废弃。个人开发者只能在 QQ 开放平台后台手动加人；
+  # 能聊到机器人的用户一律放行，监控按 owner_openid 隔离。
+  # allowUsers: []
+  # allowAll: false
+  # 同容器内 app→bot 告警推送（勿改成其他主机名）
+  notifyUrl: "http://127.0.0.1:8091/notify"
 
 # OneBot v11（已降级，默认关闭；主路径为 qqofficial）
 onebot:

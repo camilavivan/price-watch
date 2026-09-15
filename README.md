@@ -6,22 +6,34 @@
 
 ## 架构
 
-| 服务 | 职责 | 网络 |
-|------|------|------|
-| `app`（Python FastAPI） | SQLite、调度抓价、调试 Web、内部 REST `/api/bot/*` | 宿主机 `8080`（可用 `WEB_PORT` 改） |
-| `bot`（Node + `qq-official-bot`） | QQ 官方 **WebSocket 出站**、私聊命令、主动推送告警 | **无对外端口** |
+**单容器**同时跑：
 
-告警只推送给监控的归属用户（`owner_openid`）。
+| 进程 | 职责 | 网络 |
+|------|------|------|
+| FastAPI（uvicorn） | SQLite、调度抓价、调试 Web、内部 REST `/api/bot/*` | 宿主机 `${WEB_PORT:-8080}` → 容器 `8080` |
+| Node QQ Bot | QQ 官方 **WebSocket 出站**、私聊命令、主动推送告警 | **无对外端口**；notify 仅 `127.0.0.1:8091` |
+
+告警只推送给监控的归属用户（`owner_openid`）。各用户只能看到/管理自己的监控。
 
 **不做**：个人微信 / 企业微信产品路径。OneBot（NapCat 等）已降级，默认关闭。
 
-## 为什么没有公网端口？
+## 为什么没有公网 Bot 端口？
 
 QQ 官方开放平台在 **WebSocket** 模式下由机器人**主动出站**连接腾讯网关，因此：
 
 - **不需要**把 webhook 暴露到公网
-- `docker-compose` 默认把 Web 映射到宿主机 `8080`（远程用 `http://服务器IP:8080`）；Bot 无入站端口
-- `bot` 服务不发布任何 ports
+- `docker-compose` 只发布 Web 端口；Bot 与 notify 均在容器内 localhost
+
+## 谁能和机器人聊天？
+
+个人开发者 **无法**在应用配置里用 `allowUsers` 做白名单——QQ 开放平台后台已经限制谁可以与机器人会话。
+
+1. 打开 [QQ 开放平台](https://q.qq.com/) 控制台
+2. 在机器人应用里 **手动添加** 可聊天的用户 / 好友
+3. 被平台放行、能私聊到机器人的人，本服务一律接受命令
+4. **无需**再配置 `allowUsers` / `allowAll`（已废弃）
+
+数据隔离仍靠每条监控的 `owner_openid`：用户 A 看不到用户 B 的列表。
 
 ## 创建 QQ 开放平台机器人
 
@@ -29,7 +41,8 @@ QQ 官方开放平台在 **WebSocket** 模式下由机器人**主动出站**连�
 2. 获取 **AppID** 与 **AppSecret（Secret）**。
 3. 订阅/启用相关能力，意图使用 **`GROUP_AND_C2C_EVENT`**（私聊 C2C + 群，与本项目一致）。
 4. 连接方式选 **WebSocket**（不要用需公网回调的 Webhook）。
-5. 将 AppID / Secret 写入本地 `.env`（**不要提交到 Git**）：
+5. 在平台后台把要用的好友加入可聊天名单。
+6. 将 AppID / Secret 写入本地 `.env`（**不要提交到 Git**）：
 
 ```bash
 cp .env.example .env
@@ -39,25 +52,14 @@ cp .env.example .env
 # ADMIN_TOKEN=随机长字符串   # 建议设置
 ```
 
-6. 复制配置并填写好友白名单（openid）：
+7. 复制配置：
 
 ```bash
 cp config.example.yaml config.yaml
-# qqofficial.allowUsers: ["好友的openid", ...]
-# allowAll: false
+# 一般只需改 sandbox / sendImages；AppID/Secret 用环境变量
 ```
 
-首次联调可把 `qqofficial.sandbox: true`。openid 可在用户私聊机器人后从 bot 日志 / 平台后台查看。
-
-## 好友白名单
-
-```yaml
-qqofficial:
-  allowUsers: []    # 空 = 拒绝所有人（除非 allowAll: true）
-  allowAll: false
-```
-
-只有列表中的 openid 能用命令；告警也只发给监控归属者本人。
+首次联调可把 `qqofficial.sandbox: true`。
 
 ## QQ 聊天命令（私聊 C2C；群消息同样解析）
 
@@ -72,20 +74,22 @@ qqofficial:
 
 示例：`监控 https://item.jd.com/100012043978.html 99`
 
-## 快速开始（Docker Compose）
+## 快速开始（Docker Compose · 单容器）
 
 ```bash
 git clone https://github.com/camilavivan/price-watch.git
 cd price-watch
 cp config.example.yaml config.yaml
 cp .env.example .env
-# 编辑 .env 与 config.yaml（AppID/Secret、allowUsers）
+# 编辑 .env：QQ_BOT_APP_ID / QQ_BOT_SECRET / ADMIN_TOKEN
+# 在 QQ 开放平台后台加人（无需 allowUsers）
 docker compose up -d --build
 ```
 
 - 调试 UI：http://服务器IP:8080 （请设置 `ADMIN_TOKEN`）
 - 健康检查：http://服务器IP:8080/health
 - 数据：`./data`（SQLite）
+- 镜像内同时跑 uvicorn + Node bot；bot 异常退出会由入口脚本自动重启
 
 日常用户**只用 QQ**；Web 可查看全部监控（含各用户 `owner_openid`）。
 
@@ -114,8 +118,8 @@ qqofficial:
   sandbox: false
   mode: websocket
   sendImages: true
-  allowUsers: []
-  allowAll: false
+  # allowUsers / allowAll 已废弃：在 QQ 开放平台后台加人即可
+  notifyUrl: "http://127.0.0.1:8091/notify"   # 单容器本机
 
 web:
   host: 0.0.0.0
@@ -130,9 +134,9 @@ onebot:
 - `QQ_BOT_APP_ID` / `QQ_BOT_SECRET`
 - `ADMIN_TOKEN`
 - `DATABASE_URL`
-- `APP_API_BASE`（bot→app，默认 `http://app:8080`）
-- `BOT_NOTIFY_URL`（app→bot，默认 `http://bot:8091/notify`）
-
+- `APP_API_BASE`（bot→app，默认 `http://127.0.0.1:8080`）
+- `BOT_NOTIFY_URL`（app→bot，默认 `http://127.0.0.1:8091/notify`）
+- `WEB_PORT`（宿主机 Web 端口，默认 `8080`）
 
 ## 自采价格历史（第一方）
 
@@ -147,12 +151,11 @@ alerts:
 
 > **关于什么值得买（SMZDM）**：官方开放平台需商务邀请（联系 group-content@zhidemai.com），无自助开通。本项目**不依赖** SMZDM API，改用上述自采历史；若日后拿到对接密钥，可再另行接入。
 
-
 ## 构建超时 / 本机代理
 
-若 `pip install` 出现 `files.pythonhosted.org` / `Read timed out`（常见于国内云主机）：
+若 `pip install` / `npm install` 出现超时（常见于国内云主机）：
 
-**优先用国内镜像**（默认腾讯云 PyPI；若遇 403 可在 `.env` 改成阿里云）：
+**优先用国内镜像**（默认腾讯云 PyPI + npmmirror；若遇 403 可在 `.env` 改成阿里云）：
 
 ```bash
 docker compose build --no-cache
@@ -190,8 +193,8 @@ docker compose up -d
 ## 技术栈
 
 - **app**：Python 3.12、FastAPI、SQLAlchemy async、APScheduler、Jinja2
-- **bot**：Node 20、`qq-official-bot`、TypeScript
-- Docker Compose
+- **bot**：Node 20、`qq-official-bot`、TypeScript（源码在 `bot/`，镜像构建期编译进同一镜像）
+- Docker Compose（**单服务** `app`）
 
 ## License
 
