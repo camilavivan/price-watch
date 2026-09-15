@@ -1,9 +1,10 @@
-"""Price check + alert logic."""
+"""Price check + alert logic + local first-party history stats."""
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from sqlalchemy import desc, select
@@ -17,6 +18,18 @@ from app.notifiers import notify_all
 logger = logging.getLogger(__name__)
 
 PLATFORM_LABEL = {"jd": "京东", "taobao": "淘宝/天猫", "pdd": "拼多多"}
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+@dataclass
+class LocalHistoryStats:
+    days: int
+    count: int
+    lowest: Optional[float]
+    highest: Optional[float]
+    avg: Optional[float]
+    prices: list[float]  # chronological
+    is_history_low: bool = False
 
 
 def compute_landing(
@@ -29,10 +42,40 @@ def compute_landing(
     return round(max(list_price - (coupon or 0) - (full_reduction or 0), 0), 2)
 
 
+def sparkline(values: list[float], width: int = 24) -> str:
+    """Compact Unicode sparkline for QQ text."""
+    if not values:
+        return ""
+    pts = values[-width:] if len(values) > width else values
+    lo, hi = min(pts), max(pts)
+    if hi <= lo:
+        return _SPARK_CHARS[0] * len(pts)
+    n = len(_SPARK_CHARS) - 1
+    out = []
+    for v in pts:
+        idx = int(round((v - lo) / (hi - lo) * n))
+        idx = max(0, min(n, idx))
+        out.append(_SPARK_CHARS[idx])
+    return "".join(out)
+
+
+def is_near_history_low(
+    current: float,
+    lowest: Optional[float],
+    tolerance_percent: float,
+) -> bool:
+    if lowest is None or lowest <= 0 or current is None:
+        return False
+    threshold = lowest * (1.0 + max(tolerance_percent, 0.0) / 100.0)
+    return current <= threshold + 1e-9
+
+
 def should_alert(
     product: Product,
     old_landing: Optional[float],
     new_landing: float,
+    *,
+    hist_stats: Optional[LocalHistoryStats] = None,
 ) -> tuple[bool, str]:
     cfg = get_config().alerts
     reasons: list[str] = []
@@ -61,6 +104,21 @@ def should_alert(
             if pct >= drop_pct:
                 reasons.append(f"较上次下降 {pct:.1f}%")
 
+    if cfg.onHistoryLow and hist_stats and hist_stats.lowest is not None and hist_stats.count > 0:
+        tol = cfg.historyLowTolerancePercent
+        at_low = is_near_history_low(new_landing, hist_stats.lowest, tol)
+        was_at_low = (
+            old_landing is not None
+            and is_near_history_low(old_landing, hist_stats.lowest, tol)
+        )
+        days = hist_stats.days
+        if at_low and not was_at_low:
+            reasons.append(
+                f"接近/达到近{days}天自采历史最低 ¥{hist_stats.lowest:.2f}"
+            )
+        elif at_low and old_landing is not None and new_landing < old_landing - 0.005:
+            reasons.append(f"刷新近{days}天自采历史最低")
+
     return (bool(reasons), "；".join(reasons))
 
 
@@ -69,17 +127,75 @@ def format_alert(
     old_landing: Optional[float],
     new_landing: float,
     reason: str,
+    *,
+    hist_stats: Optional[LocalHistoryStats] = None,
 ) -> str:
     plat = PLATFORM_LABEL.get(product.platform, product.platform)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     old_s = f"¥{old_landing:.2f}" if old_landing is not None else "—"
-    return (
-        f"【到手价告警】{product.name}\n"
-        f"平台：{plat}\n"
-        f"到手价：{old_s} → ¥{new_landing:.2f}\n"
-        f"原因：{reason}\n"
-        f"链接：{product.url or '—'}\n"
-        f"时间：{now}"
+    lines = [
+        f"【到手价告警】{product.name}",
+        f"平台：{plat}",
+        f"到手价：{old_s} → ¥{new_landing:.2f}",
+        f"原因：{reason}",
+    ]
+    if hist_stats and hist_stats.count > 0:
+        lo = f"¥{hist_stats.lowest:.2f}" if hist_stats.lowest is not None else "—"
+        hi = f"¥{hist_stats.highest:.2f}" if hist_stats.highest is not None else "—"
+        avg = f"¥{hist_stats.avg:.2f}" if hist_stats.avg is not None else "—"
+        low_tag = "是" if hist_stats.is_history_low else "否"
+        lines.append(
+            f"近{hist_stats.days}天自采：最低 {lo} / 均价 {avg} / 最高 {hi}（样本 {hist_stats.count}）"
+        )
+        lines.append(f"是否历史新低：{low_tag}")
+        sp = sparkline(hist_stats.prices + [new_landing])
+        if sp:
+            lines.append(f"走势：{sp}")
+    lines.append(f"链接：{product.url or '—'}")
+    lines.append(f"时间：{now}")
+    return "\n".join(lines)
+
+
+async def compute_local_history_stats(
+    session: AsyncSession,
+    product_id: int,
+    *,
+    days: Optional[int] = None,
+    current_landing: Optional[float] = None,
+) -> LocalHistoryStats:
+    """Aggregate self-collected price_history over the lookback window."""
+    cfg = get_config().alerts
+    days_v = int(days if days is not None else cfg.historyLowDays or 90)
+    if days_v <= 0:
+        days_v = 90
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days_v)
+    q = await session.execute(
+        select(PriceHistory)
+        .where(
+            PriceHistory.product_id == product_id,
+            PriceHistory.recorded_at >= since,
+        )
+        .order_by(PriceHistory.recorded_at.asc())
+    )
+    rows = list(q.scalars().all())
+    prices = [float(h.landing_price) for h in rows if h.landing_price is not None]
+    lowest = min(prices) if prices else None
+    highest = max(prices) if prices else None
+    avg = round(sum(prices) / len(prices), 2) if prices else None
+    cur = current_landing
+    at_low = False
+    if cur is not None and lowest is not None:
+        at_low = is_near_history_low(cur, lowest, cfg.historyLowTolerancePercent)
+    elif cur is not None and not prices:
+        at_low = False
+    return LocalHistoryStats(
+        days=days_v,
+        count=len(prices),
+        lowest=lowest,
+        highest=highest,
+        avg=avg,
+        prices=prices,
+        is_history_low=at_low,
     )
 
 
@@ -137,6 +253,9 @@ async def apply_price_update(
 ) -> dict:
     old_landing = product.landing_price
 
+    # Stats from existing samples (before appending this check)
+    hist_before = await compute_local_history_stats(session, product.id)
+
     if list_price is not None:
         product.list_price = list_price
     if coupon_amount is not None:
@@ -167,12 +286,41 @@ async def apply_price_update(
     await session.commit()
     await session.refresh(product)
 
+    # Refresh stats including the new point for display
+    hist_after = await compute_local_history_stats(
+        session, product.id, current_landing=product.landing_price
+    )
+    # For alert decision use prior-window low, but mark is_history_low on after
+    alert_stats = LocalHistoryStats(
+        days=hist_before.days,
+        count=hist_before.count,
+        lowest=hist_before.lowest,
+        highest=hist_before.highest,
+        avg=hist_before.avg,
+        prices=hist_before.prices,
+        is_history_low=hist_after.is_history_low,
+    )
+    # If first samples: use after (new point may define the only low)
+    if hist_before.count == 0 and hist_after.count > 0:
+        alert_stats = hist_after
+
     alerted = False
     reason = ""
     if send_alert and product.landing_price is not None:
-        alerted, reason = should_alert(product, old_landing, product.landing_price)
+        alerted, reason = should_alert(
+            product,
+            old_landing,
+            product.landing_price,
+            hist_stats=alert_stats,
+        )
         if alerted:
-            plain = format_alert(product, old_landing, product.landing_price, reason)
+            plain = format_alert(
+                product,
+                old_landing,
+                product.landing_price,
+                reason,
+                hist_stats=hist_after,
+            )
             history = await recent_history_points(session, product.id, limit=5)
             hist_lines = "\n".join(
                 f"  {h['at']}  ¥{h['landing']:.2f}" for h in history
@@ -188,6 +336,15 @@ async def apply_price_update(
                 "history": history,
                 "image_url": product.image_url,
                 "product_id": product.id,
+                "history_stats": {
+                    "days": hist_after.days,
+                    "count": hist_after.count,
+                    "lowest": hist_after.lowest,
+                    "highest": hist_after.highest,
+                    "avg": hist_after.avg,
+                    "is_history_low": hist_after.is_history_low,
+                    "sparkline": sparkline(hist_after.prices),
+                },
             }
             await notify_all(
                 plain,
@@ -201,6 +358,14 @@ async def apply_price_update(
         "new_landing": product.landing_price,
         "alerted": alerted,
         "reason": reason,
+        "history_stats": {
+            "days": hist_after.days,
+            "count": hist_after.count,
+            "lowest": hist_after.lowest,
+            "highest": hist_after.highest,
+            "avg": hist_after.avg,
+            "is_history_low": hist_after.is_history_low,
+        },
     }
 
 

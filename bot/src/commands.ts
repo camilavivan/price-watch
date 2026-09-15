@@ -1,4 +1,5 @@
 import type { BotConfig } from './config.js';
+import type { HistoryStats } from './api.js';
 import {
   createWatch,
   deleteWatch,
@@ -12,10 +13,10 @@ const HELP = `【到手价监控】命令
 监控 <商品链接> [目标价] — 添加自己的监控
 列表 — 查看我的监控
 取消 <id> — 删除我的监控
-历史 <id> — 最近价格点
+历史 <id> — 近期到手价 + 自采统计/走势
 详情 <id> — 链接与到手价明细（也可写「详请」）
 
-说明：告警只推送给添加监控的你本人。`;
+说明：告警只推送给添加监控的你本人。历史最低来自本机自采记录（非第三方）。`;
 
 const PLATFORM: Record<string, string> = {
   jd: '京东',
@@ -26,6 +27,17 @@ const PLATFORM: Record<string, string> = {
 function fmtPrice(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '—';
   return `¥${Number(v).toFixed(2)}`;
+}
+
+function fmtStats(s: HistoryStats | null | undefined): string {
+  if (!s || !s.count) return '';
+  const lowTag = s.is_history_low ? '是 · 历史新低' : '否';
+  const lines = [
+    `近${s.days}天自采：最低 ${fmtPrice(s.lowest)} / 均价 ${fmtPrice(s.avg)} / 最高 ${fmtPrice(s.highest)}（${s.count}点）`,
+    `是否历史新低：${lowTag}`,
+  ];
+  if (s.sparkline) lines.push(`走势：${s.sparkline}`);
+  return lines.join('\n');
 }
 
 export type CommandResult = {
@@ -93,13 +105,19 @@ export async function handleCommand(
   if (m) {
     const id = Number(m[1]);
     try {
-      const hist = await getHistory(cfg, openid, id, 10);
-      if (!hist.length) return { text: `#${id} 暂无价格历史` };
+      const { history: hist, history_stats: stats } = await getHistory(cfg, openid, id, 12);
+      if (!hist.length) return { text: `#${id} 暂无价格历史（多抓几次后会出现自采统计）` };
       const lines = hist.map((h) => {
         const t = h.recorded_at ? h.recorded_at.replace('T', ' ').slice(0, 16) : '?';
         return `${t}  ${fmtPrice(h.landing_price)}`;
       });
-      return { text: `#${id} 近期到手价\n` + lines.join('\n') };
+      const statsBlock = fmtStats(stats);
+      return {
+        text:
+          `#${id} 近期到手价（自采）\n` +
+          lines.join('\n') +
+          (statsBlock ? `\n\n${statsBlock}` : ''),
+      };
     } catch (e) {
       return { text: `查询失败：${e instanceof Error ? e.message : String(e)}` };
     }
@@ -111,6 +129,7 @@ export async function handleCommand(
     try {
       const w = await getWatch(cfg, openid, id);
       const plat = PLATFORM[w.platform] || w.platform;
+      const statsBlock = fmtStats(w.history_stats);
       const body =
         `#${w.id} ${w.name}\n` +
         `平台：${plat}\n` +
@@ -118,6 +137,7 @@ export async function handleCommand(
         `券：${fmtPrice(w.coupon_amount)} · 满减：${fmtPrice(w.full_reduction)}\n` +
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +
+        (statsBlock ? `${statsBlock}\n` : '') +
         `链接：${w.url || '—'}` +
         (w.last_error ? `\n最近错误：${w.last_error}` : '');
       return { text: body, imageUrl: w.image_url };

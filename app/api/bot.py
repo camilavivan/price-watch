@@ -17,7 +17,7 @@ from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
 from app.platform_detect import detect_platform, guess_name_from_url
-from app.services import check_product, compute_landing
+from app.services import check_product, compute_local_history_stats, sparkline
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/bot", tags=["bot"])
@@ -39,8 +39,8 @@ class WatchCreate(BaseModel):
     platform: Optional[str] = None
 
 
-def _serialize(p: Product) -> dict[str, Any]:
-    return {
+def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, Any]:
+    data = {
         "id": p.id,
         "name": p.name,
         "platform": p.platform,
@@ -59,6 +59,21 @@ def _serialize(p: Product) -> dict[str, Any]:
         "last_check_at": p.last_check_at.isoformat() if p.last_check_at else None,
         "last_error": p.last_error,
         "note": p.note,
+    }
+    if history_stats is not None:
+        data["history_stats"] = history_stats
+    return data
+
+
+def _stats_dict(stats) -> dict[str, Any]:
+    return {
+        "days": stats.days,
+        "count": stats.count,
+        "lowest": stats.lowest,
+        "highest": stats.highest,
+        "avg": stats.avg,
+        "is_history_low": stats.is_history_low,
+        "sparkline": sparkline(stats.prices),
     }
 
 
@@ -145,7 +160,10 @@ async def get_watch(
     product = await db.get(Product, watch_id)
     if not product or product.owner_openid != openid:
         raise HTTPException(status_code=404, detail="监控不存在或不属于你")
-    return {"watch": _serialize(product)}
+    stats = await compute_local_history_stats(
+        db, product.id, current_landing=product.landing_price
+    )
+    return {"watch": _serialize(product, history_stats=_stats_dict(stats))}
 
 
 @router.delete("/watches/{watch_id}")
@@ -197,8 +215,13 @@ async def watch_history(
         }
         for h in rows
     ]
-    return {"watch_id": watch_id, "history": history}
+    stats = await compute_local_history_stats(
+        db, watch_id, current_landing=product.landing_price
+    )
+    return {
+        "watch_id": watch_id,
+        "history": history,
+        "history_stats": _stats_dict(stats),
+    }
 
 
-# silence unused import warning for compute_landing (kept for future)
-_ = compute_landing

@@ -19,6 +19,10 @@ class AlertsConfig(BaseModel):
     onBelowTarget: bool = True
     dropPercent: float = 5.0
     dropYuan: float = 0.0
+    # First-party local history (self-collected price_history)
+    onHistoryLow: bool = True
+    historyLowDays: int = 90  # lookback window: 30 / 90 / 180 typical
+    historyLowTolerancePercent: float = 0.5  # within 0.5% of window low → 历史新低
 
 
 class WebConfig(BaseModel):
@@ -90,9 +94,9 @@ def load_config(force: bool = False) -> AppConfig:
             if isinstance(raw, dict):
                 data = raw
 
-    # Ignore legacy wecom product config except for logging
-    if data.pop("wecom", None) is not None:
-        pass
+    # Ignore legacy wecom / smzdm openapi keys if present in old configs
+    data.pop("wecom", None)
+    data.pop("smzdm", None)
 
     cfg = AppConfig.model_validate(data)
 

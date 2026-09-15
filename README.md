@@ -67,8 +67,8 @@ qqofficial:
 | `监控 <商品链接> [目标价]` | 为**当前用户**添加监控 |
 | `列表` | 我的监控（id / 标题 / 到手价 / 目标） |
 | `取消 <id>` | 删除我的监控 |
-| `历史 <id>` | 最近 N 条到手价 |
-| `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分；有图则尝试发图 |
+| `历史 <id>` | 最近 N 条自采到手价 + 近 N 天最低/均价/最高与文字走势 |
+| `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分 + 自采历史统计；有图则尝试发图 |
 
 示例：`监控 https://item.jd.com/100012043978.html 99`
 
@@ -133,6 +133,20 @@ onebot:
 - `APP_API_BASE`（bot→app，默认 `http://app:8080`）
 - `BOT_NOTIFY_URL`（app→bot，默认 `http://bot:8091/notify`）
 
+
+## 自采价格历史（第一方）
+
+每次成功抓价或手动更新都会写入 `price_history`（时间戳 + 到手价 + 来源）。系统据此计算近 N 天最低 / 最高 / 均价，并在接近窗口最低价时触发「历史新低」告警（可配天数与容差）。
+
+```yaml
+alerts:
+  onHistoryLow: true
+  historyLowDays: 90              # 30 / 90 / 180
+  historyLowTolerancePercent: 0.5 # 当前价 ≤ 最低 × (1+0.5%) 视为新低
+```
+
+> **关于什么值得买（SMZDM）**：官方开放平台需商务邀请（联系 group-content@zhidemai.com），无自助开通。本项目**不依赖** SMZDM API，改用上述自采历史；若日后拿到对接密钥，可再另行接入。
+
 ## 平台适配
 
 | 平台 | 自动拉取 | 说明 |
@@ -145,7 +159,8 @@ onebot:
 
 - 商品带 `owner_openid`（QQ 用户 id）
 - 同一用户同一 `url` 唯一
-- 告警经 bot 主动私聊该 openid（含标题、到手价 old→new、链接、短历史；有 `image_url` 时尝试 `segment.image`，失败回退文字）
+- 告警经 bot 主动私聊该 openid（含标题、到手价 old→new、链接、短历史、自采历史统计；有 `image_url` 时尝试 `segment.image`，失败回退文字）
+- 自采 `price_history`：每次成功 check/manual 追加；告警可含近 N 天历史新低
 
 ## 技术栈
 

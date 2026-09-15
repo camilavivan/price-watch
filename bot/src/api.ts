@@ -1,5 +1,15 @@
 import type { BotConfig } from './config.js';
 
+export type HistoryStats = {
+  days: number;
+  count: number;
+  lowest: number | null;
+  highest: number | null;
+  avg: number | null;
+  is_history_low: boolean;
+  sparkline?: string;
+};
+
 export type Watch = {
   id: number;
   name: string;
@@ -14,6 +24,7 @@ export type Watch = {
   needs_manual: boolean;
   image_url: string | null;
   last_error: string | null;
+  history_stats?: HistoryStats | null;
 };
 
 async function request<T>(
@@ -100,11 +111,14 @@ export async function getHistory(
   openid: string,
   id: number,
   limit = 10,
-): Promise<HistoryPoint[]> {
-  const data = await request<{ history: HistoryPoint[] }>(
+): Promise<{ history: HistoryPoint[]; history_stats?: HistoryStats | null }> {
+  const data = await request<{ history: HistoryPoint[]; history_stats?: HistoryStats }>(
     cfg,
     'GET',
     `/api/bot/watches/${id}/history?openid=${encodeURIComponent(openid)}&limit=${limit}`,
   );
-  return data.history || [];
+  return {
+    history: data.history || [],
+    history_stats: data.history_stats ?? null,
+  };
 }

@@ -24,6 +24,10 @@ alerts:
   onBelowTarget: true
   dropPercent: 5
   dropYuan: 0
+  # 自采历史：每次成功抓价写入 price_history，按窗口统计最低/均价/最高
+  onHistoryLow: true
+  historyLowDays: 90          # 回看天数，常用 30 / 90 / 180
+  historyLowTolerancePercent: 0.5  # 当前价在最低价 0.5% 内视为历史新低
 
 # QQ 官方开放平台 Bot（主路径）
 # 使用 WebSocket 出站，无需公网入站端口 / webhook
