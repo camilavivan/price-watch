@@ -21,12 +21,29 @@ from app.url_normalize import extract_jd_sku, normalize_url
 logger = logging.getLogger(__name__)
 
 
-async def _jd_from_html(sku: str) -> tuple[Optional[str], Optional[str]]:
-    pages = [
-        f"https://item.jd.com/{sku}.html",
-        f"https://item.m.jd.com/product/{sku}.html",
-    ]
+async def _jd_from_html(sku: str, preferred_url: str = "") -> tuple[Optional[str], Optional[str]]:
+    pages: list[str] = []
+    pref = (preferred_url or "").strip()
+    if pref.startswith("http"):
+        pages.append(pref)
+    pages.extend(
+        [
+            f"https://mitem.jd.hk/product/{sku}.html",
+            f"https://npcitem.jd.hk/{sku}.html",
+            f"https://item.jd.hk/{sku}.html",
+            f"https://item.m.jd.com/product/{sku}.html",
+            f"https://item.jd.com/{sku}.html",
+        ]
+    )
+    seen: set[str] = set()
+    ordered: list[str] = []
     for page in pages:
+        key = page.split("?", 1)[0]
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(page)
+    for page in ordered:
         try:
             result = await fetch_meta(page)
             if result.title or result.image_url:
@@ -109,7 +126,7 @@ async def _enrich_jd(url: str, sku_id: Optional[str]) -> tuple[Optional[str], Op
                 logger.warning("JD enrich without sku failed: %s", e)
         return None, None
 
-    title, image = await _jd_from_html(sku)
+    title, image = await _jd_from_html(sku, url or "")
     if title and image:
         return title, image
 

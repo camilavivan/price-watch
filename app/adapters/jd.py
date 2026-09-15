@@ -19,7 +19,7 @@ from app.adapters.generic_html import (
 )
 from app.adapters.product_meta import enrich_title_image
 from app.adapters.rate_limit import wait_rate_limit
-from app.url_normalize import extract_jd_sku
+from app.url_normalize import extract_jd_sku, jd_product_canonical
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,8 @@ _PRICE_KEYS = (
     "originPrice",
     "salePrice",
     "actualPrice",
+    "bfPrice",
+    "vipPrice",
     "p",
     "m",
 )
@@ -56,6 +58,7 @@ _ALLIN_KEYS = (
     "taxInclusivePrice",
     "includeTaxPrice",
     "finalPrice",
+    "estimatePrice",
 )
 
 _NUM_RE = re.compile(r"([0-9]{1,7}(?:\.[0-9]{1,2})?)")
@@ -99,6 +102,13 @@ _GOODS_TEXT_RE = re.compile(
     re.I,
 )
 
+_RISK_MARKERS = (
+    "京东验证",
+    "risk_handler",
+    "privatedomain/risk",
+    "bp_bizid",
+)
+
 
 def extract_sku_id(url: str, sku_id: Optional[str] = None) -> Optional[str]:
     if sku_id:
@@ -118,6 +128,25 @@ def extract_sku_id(url: str, sku_id: Optional[str] = None) -> Optional[str]:
         if key in qs and qs[key]:
             return qs[key][0]
     return None
+
+
+def _host(url: str) -> str:
+    try:
+        return (urlparse(url or "").netloc or "").lower().split("@")[-1].split(":")[0]
+    except Exception:
+        return ""
+
+
+def _is_jd_hk(url: str) -> bool:
+    h = _host(url)
+    return h == "jd.hk" or h.endswith(".jd.hk")
+
+
+def _looks_like_risk_html(html: str) -> bool:
+    if not html or len(html) < 80:
+        return False
+    sample = html[:4000]
+    return any(m in sample for m in _RISK_MARKERS)
 
 
 def _to_price(val: Any) -> Optional[float]:
@@ -141,7 +170,7 @@ def _to_price(val: Any) -> Optional[float]:
 
 def _walk_collect(obj: Any, out: dict[str, list[float]], depth: int = 0) -> None:
     """Recursively collect known price/tax keys from nested dict/list JSON."""
-    if depth > 8:
+    if depth > 10:
         return
     if isinstance(obj, dict):
         for k, v in obj.items():
@@ -156,9 +185,13 @@ def _walk_collect(obj: Any, out: dict[str, list[float]], depth: int = 0) -> None
                 if p is not None:
                     out.setdefault("allin", []).append(p)
             elif key in _PRICE_KEYS or kl in {x.lower() for x in _PRICE_KEYS}:
-                p = _to_price(v)
-                if p is not None and p >= 0.5:
-                    out.setdefault("price", []).append(p)
+                # Nested {"price": {"pPrice": ...}} — recurse into dict/list values
+                if isinstance(v, (dict, list)):
+                    _walk_collect(v, out, depth + 1)
+                else:
+                    p = _to_price(v)
+                    if p is not None and p >= 0.5:
+                        out.setdefault("price", []).append(p)
             else:
                 _walk_collect(v, out, depth + 1)
     elif isinstance(obj, list):
@@ -171,24 +204,29 @@ def _extract_json_blobs(html: str) -> list[Any]:
     blobs: list[Any] = []
     patterns = [
         re.compile(
-            r"(?:pageConfig|wareInfo|itemInfo|priceInfo|skuJson|product)\s*=\s*(\{.+?\})\s*;",
+            r"(?:pageConfig|wareInfo|itemInfo|_itemInfo|priceInfo|skuJson|product|"
+            r"wareBusiness|priceResult)\s*=\s*(\{.+?\})\s*;",
             re.S | re.I,
         ),
-        re.compile(r"window\.(?:pageConfig|ware)\s*=\s*(\{.+?\})\s*;", re.S | re.I),
+        re.compile(
+            r"window\.(?:pageConfig|ware|_itemInfo)\s*=\s*(\{.+?\})\s*;",
+            re.S | re.I,
+        ),
     ]
     for pat in patterns:
         for m in pat.finditer(html):
             raw = m.group(1)
-            # Truncate huge blobs for safety
             if len(raw) > 500_000:
                 continue
             try:
                 blobs.append(json.loads(raw))
             except Exception:
-                # Try fixing trailing commas lightly — skip on failure
                 continue
-    # Also try raw regex-friendly substrings that look like JSON with pPrice
-    for m in re.finditer(r"\{[^{}]{0,2000}?(?:pPrice|taxFee|jdPrice)[^{}]{0,2000}?\}", html):
+    # Also try raw regex-friendly substrings that look like JSON with pPrice/taxFee
+    for m in re.finditer(
+        r"\{[^{}]{0,3000}?(?:pPrice|taxFee|jdPrice|plusTaxPrice)[^{}]{0,3000}?\}",
+        html,
+    ):
         try:
             blobs.append(json.loads(m.group(0)))
         except Exception:
@@ -206,9 +244,20 @@ def parse_jd_price_tax(html: str) -> dict[str, Optional[float]]:
       3) All-in 「含税价 / 预估合计 / plusTaxPrice」 as list_price with tax=0
          (documented: already tax-inclusive → avoid double-counting)
     """
+    if not html:
+        return {"list_price": None, "tax_amount": None, "note": None}
+
     collected: dict[str, list[float]] = {}
     for blob in _extract_json_blobs(html):
         _walk_collect(blob, collected)
+
+    # Whole-document JSON (API response body)
+    stripped = html.strip()
+    if stripped[:1] in ("{", "["):
+        try:
+            _walk_collect(json.loads(stripped), collected)
+        except Exception:
+            pass
 
     for m in _PRICE_FIELD_RE.finditer(html):
         p = _to_price(m.group(1))
@@ -253,7 +302,6 @@ def parse_jd_price_tax(html: str) -> dict[str, Optional[float]]:
 
     # Tiny values that look like tax should not become list_price
     if price is not None and tax is not None and price < tax and price < 20:
-        # likely swapped / mis-picked; prefer all-in
         price = None
 
     note: Optional[str] = None
@@ -264,17 +312,34 @@ def parse_jd_price_tax(html: str) -> dict[str, Optional[float]]:
         note = "JD HTML/JSON：商品价" + ("（另有税费）" if tax else "")
         return {"list_price": price, "tax_amount": tax or 0.0, "note": note}
     if allin is not None:
-        # All-in already includes tax → store as list_price, tax=0 to avoid double count
         note = "JD HTML/JSON：含税价/预估合计作标价（tax=0，已含税）"
         return {"list_price": allin, "tax_amount": 0.0, "note": note}
     if tax is not None:
-        # Tax alone is useless without goods price
         return {"list_price": None, "tax_amount": tax, "note": "仅解析到税费"}
     return {"list_price": None, "tax_amount": None, "note": None}
 
 
-async def _try_p3cn(sku: str) -> Optional[float]:
-    api_url = f"https://p.3.cn/prices/mgets?skuIds=J_{sku}&type=1"
+def _is_dns_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    name = type(exc).__name__.lower()
+    return any(
+        s in msg or s in name
+        for s in (
+            "name or service not known",
+            "no address associated",
+            "nodename nor servname",
+            "getaddrinfo",
+            "name resolution",
+            "errno -2",
+            "errno -5",
+            "gaierror",
+        )
+    )
+
+
+async def _try_price_host(sku: str, host: str) -> Optional[float]:
+    """Try a p.3.cn-style public price host. Soft-fail on DNS/network."""
+    api_url = f"https://{host}/prices/mgets?skuIds=J_{sku}&type=1"
     headers = {
         "User-Agent": BROWSER_UA,
         "Referer": f"https://item.jd.com/{sku}.html",
@@ -284,6 +349,7 @@ async def _try_p3cn(sku: str) -> Optional[float]:
         async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(api_url, headers=headers)
             if resp.status_code != 200:
+                logger.info("JD %s status=%s sku=%s", host, resp.status_code, sku)
                 return None
             data = resp.json()
             if not (isinstance(data, list) and data):
@@ -292,32 +358,114 @@ async def _try_p3cn(sku: str) -> Optional[float]:
             for key in ("p", "op", "m"):
                 price = _to_price(item.get(key))
                 if price is not None:
+                    logger.info("JD price found source=%s sku=%s price=%s", host, sku, price)
                     return price
     except Exception as e:
-        logger.warning("JD p.3.cn failed sku=%s: %s", sku, e)
+        if _is_dns_error(e):
+            logger.info("JD %s DNS soft-fail sku=%s: %s", host, sku, e)
+        else:
+            logger.info("JD %s soft-fail sku=%s: %s", host, sku, e)
     return None
 
 
-async def _try_secondary_endpoints(sku: str) -> Optional[dict[str, Optional[float]]]:
+async def _try_p3cn(sku: str) -> Optional[float]:
+    """Public price APIs — never fatal; try p.3.cn then pe.3.cn if it resolves."""
+    for host in ("p.3.cn", "pe.3.cn"):
+        price = await _try_price_host(sku, host)
+        if price is not None:
+            return price
+    return None
+
+
+def _candidate_page_urls(sku: str, preferred_url: str = "") -> list[str]:
+    """
+    Ordered page URLs to try for HTML/JSON price parse.
+
+    Prefer the caller-provided / resolved URL first (especially *.jd.hk),
+    then other HK hosts, then mobile/mainland.
+    """
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _add(u: str) -> None:
+        u = (u or "").strip()
+        if not u or not u.startswith("http"):
+            return
+        # Drop tracking query for fetch identity, keep path
+        key = u.split("?", 1)[0]
+        if key in seen:
+            return
+        seen.add(key)
+        urls.append(u.split("#", 1)[0])
+
+    pref = (preferred_url or "").strip()
+    if pref.startswith("http"):
+        _add(pref)
+        # Normalize to clean jd.hk / jd.com product URL when sku known
+        if sku:
+            _add(jd_product_canonical(sku, pref))
+
+    if sku:
+        # Always try HK hosts too — global SKUs may be stored as item.jd.com by mistake
+        for u in (
+            f"https://mitem.jd.hk/product/{sku}.html",
+            f"https://npcitem.jd.hk/{sku}.html",
+            f"https://item.jd.hk/{sku}.html",
+            f"https://item.m.jd.com/product/{sku}.html",
+            f"https://item.jd.com/{sku}.html",
+        ):
+            _add(u)
+
+    return urls
+
+
+async def _try_secondary_endpoints(sku: str, *, prefer_hk: bool = False) -> Optional[dict[str, Optional[float]]]:
     """Best-effort public ware-style endpoints; fail soft."""
-    urls = [
-        f"https://item-soa.jd.com/getWareBusiness?skuId={sku}",
-        f"https://api.m.jd.com/api?functionId=pc_itempage_wareBusiness&appid=item-v3"
-        f"&body=%7B%22skuId%22%3A%22{sku}%22%7D",
-    ]
+    urls: list[str] = []
+    if prefer_hk:
+        urls.append(
+            f"https://color.jd.hk/api?functionId=pc_itempage_wareBusiness&appid=item-v3"
+            f"&client=pc&clientVersion=1.0.0&body=%7B%22skuId%22%3A%22{sku}%22%7D"
+        )
+    urls.extend(
+        [
+            f"https://api.m.jd.com/api?functionId=pc_itempage_wareBusiness&appid=item-v3"
+            f"&body=%7B%22skuId%22%3A%22{sku}%22%7D",
+            f"https://item-soa.jd.com/getWareBusiness?skuId={sku}",
+        ]
+    )
+    if not prefer_hk:
+        urls.append(
+            f"https://color.jd.hk/api?functionId=pc_itempage_wareBusiness&appid=item-v3"
+            f"&client=pc&clientVersion=1.0.0&body=%7B%22skuId%22%3A%22{sku}%22%7D"
+        )
+
+    referer = (
+        f"https://npcitem.jd.hk/{sku}.html"
+        if prefer_hk
+        else f"https://item.jd.com/{sku}.html"
+    )
     headers = {
         **DEFAULT_HEADERS,
-        "Referer": f"https://item.jd.com/{sku}.html",
+        "Referer": referer,
         "Accept": "application/json, text/plain, */*",
     }
     for url in urls:
+        host = _host(url) or url[:40]
         try:
             async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code != 200:
+                    logger.info("JD secondary %s status=%s sku=%s", host, resp.status_code, sku)
                     continue
                 text = resp.text
                 if not text or len(text) < 20:
+                    continue
+                # Skip obvious error / missing API payloads
+                if '"echo"' in text and (
+                    "does not exist" in text or "no access" in text or "error2" in text.lower()
+                ):
+                    logger.info("JD secondary %s unusable echo sku=%s", host, sku)
                     continue
                 try:
                     data = resp.json()
@@ -326,7 +474,6 @@ async def _try_secondary_endpoints(sku: str) -> Optional[dict[str, Optional[floa
                 collected: dict[str, list[float]] = {}
                 if data is not None:
                     _walk_collect(data, collected)
-                # Also regex on raw body
                 parsed = parse_jd_price_tax(text)
                 price = None
                 tax = None
@@ -342,28 +489,73 @@ async def _try_secondary_endpoints(sku: str) -> Optional[dict[str, Optional[floa
                     tax = float(
                         Counter(round(v, 2) for v in collected["tax"]).most_common(1)[0][0]
                     )
+                if collected.get("allin") and not price:
+                    from collections import Counter
+
+                    price = float(
+                        Counter(round(v, 2) for v in collected["allin"]).most_common(1)[0][0]
+                    )
+                    tax = 0.0
                 if parsed.get("list_price") and not price:
                     price = parsed["list_price"]
-                if parsed.get("tax_amount") and tax is None:
+                if parsed.get("tax_amount") is not None and tax is None:
                     tax = parsed["tax_amount"]
                 if price:
+                    logger.info(
+                        "JD price found source=%s sku=%s price=%s tax=%s",
+                        host,
+                        sku,
+                        price,
+                        tax,
+                    )
                     return {
                         "list_price": price,
-                        "tax_amount": tax or 0.0,
-                        "note": "JD 公开 ware/business 接口",
+                        "tax_amount": tax if tax is not None else 0.0,
+                        "note": f"JD 公开 ware/business 接口 ({host})",
                     }
+                logger.info("JD secondary %s no price in body sku=%s", host, sku)
         except Exception as e:
-            logger.debug("JD secondary endpoint soft-fail %s: %s", url[:60], e)
+            if _is_dns_error(e):
+                logger.info("JD secondary DNS soft-fail %s: %s", host, e)
+            else:
+                logger.info("JD secondary soft-fail %s: %s", host, e)
     return None
 
 
-async def _fetch_page_parse(url: str) -> tuple[dict[str, Optional[float]], Optional[str], Optional[str]]:
-    """Fetch HTML and parse JD-specific + generic fallback. Returns (parsed, title, image)."""
+async def _fetch_page_parse(
+    url: str,
+) -> tuple[dict[str, Optional[float]], Optional[str], Optional[str], str]:
+    """
+    Fetch HTML and parse JD-specific + generic fallback.
+    Returns (parsed, title, image, status_note).
+    """
     try:
         html = await fetch_html(url, timeout=15.0)
     except Exception as e:
-        logger.warning("JD page fetch failed url=%s: %s", url[:80], e)
-        return {"list_price": None, "tax_amount": None, "note": None}, None, None
+        if _is_dns_error(e):
+            logger.info("JD page DNS soft-fail url=%s: %s", url[:80], e)
+            return (
+                {"list_price": None, "tax_amount": None, "note": None},
+                None,
+                None,
+                f"DNS失败:{_host(url)}",
+            )
+        logger.info("JD page fetch failed url=%s: %s", url[:80], e)
+        return (
+            {"list_price": None, "tax_amount": None, "note": None},
+            None,
+            None,
+            f"请求失败:{_host(url)}",
+        )
+
+    if _looks_like_risk_html(html):
+        logger.info("JD page risk/challenge html url=%s", url[:80])
+        return (
+            {"list_price": None, "tax_amount": None, "note": None},
+            None,
+            None,
+            f"风控页:{_host(url)}",
+        )
 
     parsed = parse_jd_price_tax(html)
     generic = extract_from_html(html, base_url=url)
@@ -371,7 +563,6 @@ async def _fetch_page_parse(url: str) -> tuple[dict[str, Optional[float]], Optio
     image_url = generic.image_url
 
     if parsed.get("list_price") is None and generic.ok and generic.price:
-        # Don't treat a tiny tax-like amount as main price when tax markers exist
         tax = parsed.get("tax_amount") or generic.tax_amount
         if tax and generic.price <= tax and generic.price < 50:
             pass
@@ -387,7 +578,17 @@ async def _fetch_page_parse(url: str) -> tuple[dict[str, Optional[float]], Optio
             if parsed.get("note"):
                 parsed["note"] = str(parsed["note"]) + " + generic 税费"
 
-    return parsed, title, image_url
+    status = "ok" if parsed.get("list_price") else f"无价格:{_host(url)}"
+    if parsed.get("list_price"):
+        logger.info(
+            "JD price found source=html:%s sku_url=%s price=%s tax=%s note=%s",
+            _host(url),
+            url[:100],
+            parsed.get("list_price"),
+            parsed.get("tax_amount"),
+            parsed.get("note"),
+        )
+    return parsed, title, image_url, status
 
 
 class JDAdapter:
@@ -406,63 +607,51 @@ class JDAdapter:
 
         await wait_rate_limit()
 
-        page_url = (
+        preferred = (
             url.strip()
             if (url or "").strip().startswith("http")
-            else f"https://item.jd.com/{sku}.html"
+            else jd_product_canonical(sku, url or "")
         )
+        page_urls = _candidate_page_urls(sku, preferred)
+        prefer_hk = _is_jd_hk(preferred) or any(_is_jd_hk(u) for u in page_urls[:2])
 
         list_price: Optional[float] = None
         tax_amount: Optional[float] = None
         note: Optional[str] = None
         title: Optional[str] = None
         image_url: Optional[str] = None
+        tried: list[str] = []
 
-        # 1) p.3.cn — ignore invalid (≤0, -1, missing)
-        api_price = await _try_p3cn(sku)
-        if api_price is not None:
-            list_price = api_price
-            note = "来自京东公开价格接口（到手价需自行填券/满减；海淘税费另计）"
+        # 1) Prefer actual expanded / HK product HTML first (not p.3.cn)
+        for page_url in page_urls:
+            tried.append(_host(page_url) or page_url[:40])
+            parsed, t1, i1, status = await _fetch_page_parse(page_url)
+            title = title or t1
+            image_url = image_url or i1
+            if status.startswith("DNS") or status.startswith("请求") or status.startswith("风控"):
+                # keep short marker already in tried host list
+                pass
+            if parsed.get("tax_amount") and not tax_amount:
+                tax_amount = float(parsed["tax_amount"] or 0)
+            if parsed.get("list_price"):
+                list_price = float(parsed["list_price"])
+                if parsed.get("tax_amount") is not None:
+                    tax_amount = float(parsed["tax_amount"] or 0)
+                note = (parsed.get("note") or "JD HTML/JSON") + f" ({_host(page_url)})"
+                break
 
-        # 2) Desktop / given page HTML+JSON
-        parsed, t1, i1 = await _fetch_page_parse(page_url)
-        title = title or t1
-        image_url = image_url or i1
-        if parsed.get("tax_amount"):
-            tax_amount = float(parsed["tax_amount"] or 0)
-        if list_price is None and parsed.get("list_price"):
-            list_price = float(parsed["list_price"])
-            note = parsed.get("note") or "JD HTML/JSON"
-        elif list_price is not None and tax_amount:
-            # Keep API price, attach tax from HTML
-            note = (note or "p.3.cn") + " + HTML 税费"
-
-        # 3) Mobile / HK pages when still no price
+        # 2) p.3.cn / pe.3.cn — soft DNS, never required
         if list_price is None:
-            alt_urls = [
-                f"https://item.m.jd.com/product/{sku}.html",
-                f"https://npcitem.jd.hk/{sku}.html",
-                f"https://item.jd.hk/{sku}.html",
-            ]
-            for alt in alt_urls:
-                parsed2, t2, i2 = await _fetch_page_parse(alt)
-                title = title or t2
-                image_url = image_url or i2
-                if parsed2.get("tax_amount") and not tax_amount:
-                    tax_amount = float(parsed2["tax_amount"] or 0)
-                if parsed2.get("list_price"):
-                    list_price = float(parsed2["list_price"])
-                    tax_amount = (
-                        float(parsed2["tax_amount"] or 0)
-                        if parsed2.get("tax_amount") is not None
-                        else (tax_amount or 0.0)
-                    )
-                    note = (parsed2.get("note") or "JD 移动/海淘页") + f" ({alt.split('/')[2]})"
-                    break
+            tried.append("p.3.cn/pe.3.cn")
+            api_price = await _try_p3cn(sku)
+            if api_price is not None:
+                list_price = api_price
+                note = "来自京东公开价格接口（到手价需自行填券/满减；海淘税费另计）"
 
-        # 4) Optional secondary public endpoints
+        # 3) Optional secondary public endpoints (api.m.jd.com / color.jd.hk / item-soa)
         if list_price is None:
-            sec = await _try_secondary_endpoints(sku)
+            tried.append("api.m.jd.com/color.jd.hk")
+            sec = await _try_secondary_endpoints(sku, prefer_hk=prefer_hk)
             if sec and sec.get("list_price"):
                 list_price = float(sec["list_price"])
                 tax_amount = float(sec.get("tax_amount") or 0)
@@ -470,11 +659,18 @@ class JDAdapter:
 
         # Always enrich title/image
         if not title or not image_url:
-            t2, i2 = await enrich_title_image(platform="jd", url=page_url, sku_id=sku)
+            t2, i2 = await enrich_title_image(platform="jd", url=preferred, sku_id=sku)
             title = title or t2
             image_url = image_url or i2
 
         if list_price is not None and list_price > 0:
+            logger.info(
+                "JD fetch ok sku=%s price=%s tax=%s source=%s",
+                sku,
+                list_price,
+                tax_amount,
+                note,
+            )
             return FetchResult(
                 ok=True,
                 list_price=list_price,
@@ -485,10 +681,16 @@ class JDAdapter:
                 raw_note=note or "京东价格解析",
             )
 
+        tried_s = "、".join(dict.fromkeys(tried))  # preserve order, unique
+        err = (
+            f"京东自动取价失败（已试：{tried_s}）。"
+            "可在调试页手动填写价格；若为海淘/JD.HK 商品请确认 canonical 为 jd.hk 链接。"
+        )
+        logger.info("JD fetch needs_manual sku=%s tried=%s", sku, tried_s)
         return FetchResult(
             ok=False,
             needs_manual=True,
-            error="京东价格接口与页面解析均失败，请手动更新价格",
+            error=err,
             title=title,
             image_url=image_url,
             tax_amount=float(tax_amount) if tax_amount else None,

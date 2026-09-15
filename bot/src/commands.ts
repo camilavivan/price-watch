@@ -205,7 +205,11 @@ async function doCreateWatch(
         taxLine +
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +
-        (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。') +
+        (w.needs_manual
+          ? w.last_error
+            ? '提示：自动取价失败，可在调试页手动填。'
+            : '提示：该平台可能需在调试页手动更新价格。'
+          : '已尝试拉取价格。') +
         hint,
       imageUrl: w.image_url,
     };

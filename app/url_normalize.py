@@ -375,6 +375,9 @@ def is_short_link(url: str) -> bool:
     # also u*.jd.com shortener-style hosts without item path
     if host.endswith(".jd.hk") and not host.startswith("item."):
         path = urlparse(u).path or ""
+        # Product pages on mitem/npcitem are not short links
+        if re.search(r"/(?:product/)?\d+\.html", path, re.I):
+            return False
         if not re.search(r"/\d+\.html", path, re.I):
             return True
     if host in ("u.jd.com",) or (host.endswith(".jd.com") and host.startswith("u")):
@@ -436,7 +439,7 @@ def extract_jd_sku(url: str) -> Optional[str]:
     if not u:
         return None
     patterns = (
-        r"(?:item\.m\.jd\.com|item\.jd\.com|npcitem\.jd\.hk|item\.jd\.hk)/(\d+)\.html",
+        r"(?:item\.m\.jd\.com|item\.jd\.com|mitem\.jd\.hk|npcitem\.jd\.hk|item\.jd\.hk)/(\d+)\.html",
         r"(?:www\.)?jd\.com/(\d+)\.html",
         r"/product/(\d+)\.html",
         r"/(\d{6,})\.html",
@@ -513,9 +516,41 @@ def extract_pdd_goods_id(url: str) -> Optional[str]:
     return None
 
 
+def _is_jd_hk_host(host: str) -> bool:
+    h = (host or "").lower()
+    return h == "jd.hk" or h.endswith(".jd.hk")
+
+
+def jd_product_canonical(sku_id: str, source_url: str = "") -> str:
+    """
+    Build JD product canonical URL.
+
+    Preserve *.jd.hk product hosts (mitem / npcitem / item.jd.hk) when the
+    resolved/source URL already lives on jd.hk — do NOT rewrite those to
+    item.jd.com (mainland page often lacks HK/global price JSON).
+    """
+    sku = str(sku_id).strip()
+    host = _host_of(source_url or "")
+    path = ""
+    try:
+        path = urlparse(source_url or "").path or ""
+    except Exception:
+        path = ""
+    if _is_jd_hk_host(host):
+        if host.startswith("mitem.") or "/product/" in path:
+            return f"https://mitem.jd.hk/product/{sku}.html"
+        if host.startswith("npcitem."):
+            return f"https://npcitem.jd.hk/{sku}.html"
+        if host.startswith("item.") or host == "jd.hk":
+            return f"https://item.jd.hk/{sku}.html"
+        # Other *.jd.hk product hosts → mitem product form (share/mobile style)
+        return f"https://mitem.jd.hk/product/{sku}.html"
+    return f"https://item.jd.com/{sku}.html"
+
+
 def _canonical_for(platform: str, sku_id: Optional[str], cleaned: str) -> str:
     if platform == "jd" and sku_id:
-        return f"https://item.jd.com/{sku_id}.html"
+        return jd_product_canonical(sku_id, cleaned or "")
     if platform == "taobao" and sku_id:
         # Prefer item.taobao.com; tmall also accepts id=
         host = urlparse(cleaned).netloc.lower()
@@ -616,7 +651,7 @@ def extract_url_from_html(html: str, *, base_url: str = "") -> Optional[str]:
 
     # 5. first link to known item hosts
     item_link = re.search(
-        r"""https?://(?:item\.taobao\.com|detail\.tmall\.com|h5\.m\.taobao\.com|item\.jd\.com|item\.m\.jd\.com|npcitem\.jd\.hk|detail\.tmall\.hk)[^\s"'<>\\]+""",
+        r"""https?://(?:item\.taobao\.com|detail\.tmall\.com|h5\.m\.taobao\.com|item\.jd\.com|item\.m\.jd\.com|mitem\.jd\.hk|npcitem\.jd\.hk|item\.jd\.hk|detail\.tmall\.hk)[^\s"'<>\\]+""",
         body,
         re.I,
     )
@@ -704,7 +739,7 @@ async def resolve_url(url: str) -> str:
          (var url / location / meta refresh / og:url / item hosts)
       3. Stop when URL looks like an item page with sku/id, or hops exhausted
 
-    For JD: if final HTML has skuId, canonicalize to item.jd.com/{sku}.html.
+    For JD: if final URL/HTML has skuId, canonicalize to item.jd.com/{sku}.html (or mitem/npcitem/item.jd.hk/{sku} when resolved on *.jd.hk).
     For Taobao: prefer item.taobao.com / detail.tmall.com with id=.
     Never calls paid APIs. On failure returns the cleaned original URL.
     """
@@ -785,12 +820,12 @@ async def resolve_url(url: str) -> str:
         logger.warning("resolve_url failed for %s: %s", ensured, e)
         return ensured
 
-    # Post-process: JD sku from URL or HTML → canonical
+    # Post-process: JD sku from URL or HTML → preserve jd.hk when resolved there
     plat = detect_platform(current)
     if plat == "jd":
         sku = extract_jd_sku(current) or extract_jd_sku_from_html(last_html)
         if sku:
-            canonical = f"https://item.jd.com/{sku}.html"
+            canonical = jd_product_canonical(sku, current)
             logger.info("resolve_url JD canonical: %s", canonical)
             return canonical
     if plat == "taobao":
