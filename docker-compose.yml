@@ -1,27 +1,29 @@
-# price-watch — 到手价监控
+# price-watch — 到手价监控（QQ 官方 Bot + 本机调试 Web）
 # 用法：cp config.example.yaml config.yaml && cp .env.example .env
+#       编辑 config.yaml 的 qqofficial.allowUsers，.env 填 QQ_BOT_APP_ID / QQ_BOT_SECRET
 #       docker compose up -d --build
+#
+# Web 仅绑定 127.0.0.1（不对外网暴露）；Bot 用 WebSocket 出站，无入站端口。
 
 services:
-  web:
+  app:
     build: .
-    image: price-watch:latest
-    container_name: price-watch
+    image: price-watch-app:latest
+    container_name: price-watch-app
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      # 仅本机调试/管理，不要改成 0.0.0.0
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
-    # 若已有 .env，取消下一行注释：
-    # env_file:
-    #   - .env
+    env_file:
+      - .env
     environment:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
-      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-}
-      WECOM_WEBHOOK_URL: ${WECOM_WEBHOOK_URL:-}
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:///./data/pricewatch.db}
+      BOT_NOTIFY_URL: ${BOT_NOTIFY_URL:-http://bot:8091/notify}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
@@ -30,14 +32,34 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-    # 若 OneBot 在同 compose 网络，取消下面 depends_on，并把 config 中
-    # onebot.apiBase 设为 http://napcat:5700
-    # depends_on:
-    #   - napcat
 
-  # napcat:
-  #   image: mlikiowa/napcat-docker:latest
-  #   container_name: napcat
-  #   restart: unless-stopped
-  #   ports:
-  #     - "5700:5700"
+  bot:
+    build: ./bot
+    image: price-watch-bot:latest
+    container_name: price-watch-bot
+    restart: unless-stopped
+    # 无 ports：QQ 官方 WebSocket 出站连接，不需要公网入站
+    depends_on:
+      app:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+    env_file:
+      - .env
+    environment:
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      APP_API_BASE: ${APP_API_BASE:-http://app:8080}
+      BOT_NOTIFY_PORT: "8091"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8091/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

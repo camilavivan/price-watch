@@ -34,6 +34,7 @@
         <li>标价：{% if product.list_price is not none %}¥{{ '%.2f'|format(product.list_price) }}{% else %}—{% endif %}</li>
         <li>券面额：¥{{ '%.2f'|format(product.coupon_amount or 0) }} · 满减：¥{{ '%.2f'|format(product.full_reduction or 0) }}</li>
         <li>目标价：{% if product.target_price is not none %}¥{{ '%.2f'|format(product.target_price) }}{% else %}未设{% endif %}</li>
+        <li>归属 openid：{{ product.owner_openid or '—（Web 调试）' }}</li>
         <li>状态：{% if product.enabled %}启用{% else %}停用{% endif %}
           {% if product.needs_manual %}· <span class="badge warn">需手动</span>{% endif %}
         </li>

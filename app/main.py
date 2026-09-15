@@ -1,4 +1,4 @@
-"""FastAPI app — Chinese admin UI for landing-price monitoring."""
+"""FastAPI app — debug/admin UI + internal API for QQ bot."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import ADAPTERS, get_adapter
+from app.api.bot import router as bot_router
 from app.auth import auth_required, check_auth, require_auth, set_auth_cookie
 from app.config import get_config, load_config
 from app.db import get_db, init_db
@@ -42,17 +43,24 @@ PLATFORM_CHOICES = [
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     load_config(force=True)
-    # Ensure data dir exists for sqlite
     Path("data").mkdir(parents=True, exist_ok=True)
     await init_db()
     start_scheduler()
-    logger.info("price-watch started")
+    cfg = get_config()
+    logger.info(
+        "price-watch started (web=%s:%s qqofficial=%s onebot=%s)",
+        cfg.web.host,
+        cfg.web.port,
+        cfg.qqofficial.enabled,
+        cfg.onebot.enabled,
+    )
     yield
     stop_scheduler()
 
 
-app = FastAPI(title="到手价监控", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="到手价监控", version="0.2.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.include_router(bot_router)
 
 
 def _ctx(request: Request, **kwargs):
@@ -62,8 +70,8 @@ def _ctx(request: Request, **kwargs):
         "auth_required": auth_required(),
         "authed": check_auth(request),
         "platforms": PLATFORM_CHOICES,
+        "qqofficial_enabled": cfg.qqofficial.enabled,
         "onebot_enabled": cfg.onebot.enabled,
-        "wecom_enabled": cfg.wecom.enabled,
         **kwargs,
     }
 
@@ -104,7 +112,12 @@ async def logout():
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
-    public = path in ("/health", "/login") or path.startswith("/static")
+    # Bot API uses its own X-Admin-Token check; skip cookie redirect
+    public = (
+        path in ("/health", "/login")
+        or path.startswith("/static")
+        or path.startswith("/api/bot")
+    )
     if public or path == "/favicon.ico":
         return await call_next(request)
     if auth_required() and not check_auth(request):
@@ -128,7 +141,7 @@ async def index(request: Request, db: AsyncSession = Depends(get_db)):
 async def product_new(request: Request):
     return templates.TemplateResponse(
         "product_form.html",
-        _ctx(request, product=None, title="添加商品"),
+        _ctx(request, product=None, title="添加商品（调试）"),
     )
 
 
@@ -140,6 +153,7 @@ async def product_create(
     platform: str = Form(...),
     url: str = Form(""),
     sku_id: str = Form(""),
+    owner_openid: str = Form(""),
     list_price: Optional[str] = Form(None),
     coupon_amount: str = Form("0"),
     full_reduction: str = Form("0"),
@@ -161,6 +175,7 @@ async def product_create(
         platform=platform,
         url=(url or "").strip(),
         sku_id=(sku_id or "").strip() or None,
+        owner_openid=(owner_openid or "").strip() or None,
         list_price=lp,
         coupon_amount=coupon,
         full_reduction=fr,
@@ -200,7 +215,6 @@ async def product_detail(
         .limit(50)
     )
     history = list(hq.scalars().all())
-    # sparkline: last N landing prices oldest->newest
     spark = list(reversed([h.landing_price for h in history[:30]]))
     return templates.TemplateResponse(
         "product_detail.html",
@@ -238,6 +252,7 @@ async def product_update(
     platform: str = Form(...),
     url: str = Form(""),
     sku_id: str = Form(""),
+    owner_openid: str = Form(""),
     list_price: Optional[str] = Form(None),
     coupon_amount: str = Form("0"),
     full_reduction: str = Form("0"),
@@ -256,6 +271,7 @@ async def product_update(
     product.platform = platform
     product.url = (url or "").strip()
     product.sku_id = (sku_id or "").strip() or None
+    product.owner_openid = (owner_openid or "").strip() or None
     product.list_price = float(list_price) if list_price not in (None, "") else None
     product.coupon_amount = float(coupon_amount or 0)
     product.full_reduction = float(full_reduction or 0)
@@ -284,7 +300,6 @@ async def product_delete(
     require_auth(request)
     product = await db.get(Product, product_id)
     if product:
-        # delete history
         hq = await db.execute(
             select(PriceHistory).where(PriceHistory.product_id == product_id)
         )
@@ -320,7 +335,6 @@ async def product_update_price(
     rebate_estimate: Optional[str] = Form(None),
     landing_price: Optional[str] = Form(None),
 ):
-    """手动「更新价格」."""
     require_auth(request)
     product = await db.get(Product, product_id)
     if not product:
@@ -356,6 +370,7 @@ async def api_products(db: AsyncSession = Depends(get_db)):
                 "name": p.name,
                 "platform": p.platform,
                 "url": p.url,
+                "owner_openid": p.owner_openid,
                 "landing_price": p.landing_price,
                 "target_price": p.target_price,
                 "enabled": p.enabled,

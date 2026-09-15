@@ -21,7 +21,28 @@ class AlertsConfig(BaseModel):
     dropYuan: float = 0.0
 
 
+class WebConfig(BaseModel):
+    """Debug/admin UI — publish only on localhost via docker-compose."""
+    host: str = "127.0.0.1"
+    port: int = 8080
+
+
+class QQOfficialConfig(BaseModel):
+    """QQ 官方开放平台（由 bot/ Node 服务消费；此处供文档与可选回写）。"""
+    enabled: bool = True
+    appId: str = ""
+    secret: str = ""
+    sandbox: bool = False
+    mode: str = "websocket"  # websocket only for no public port
+    sendImages: bool = True
+    allowUsers: list[str] = Field(default_factory=list)
+    allowAll: bool = False
+    # Internal URL that Python uses to push alerts to the bot container
+    notifyUrl: str = "http://bot:8091/notify"
+
+
 class OneBotConfig(BaseModel):
+    """可选 / 已降级：默认关闭。主路径为 qqofficial。"""
     enabled: bool = False
     apiBase: str = "http://host.docker.internal:5700"
     accessToken: str = ""
@@ -29,18 +50,16 @@ class OneBotConfig(BaseModel):
     notifyUsers: list[int] = Field(default_factory=list)
 
 
-class WecomConfig(BaseModel):
-    enabled: bool = False
-    webhookUrl: str = ""
-
-
 class AppConfig(BaseModel):
     adminToken: str = ""
     databaseUrl: str = "sqlite+aiosqlite:///./data/pricewatch.db"
+    web: WebConfig = Field(default_factory=WebConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    qqofficial: QQOfficialConfig = Field(default_factory=QQOfficialConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
-    wecom: WecomConfig = Field(default_factory=WecomConfig)
+    # 不做微信/企微产品路径；保留字段仅为兼容旧 config.yaml（始终视为关闭）
+    wecom: dict[str, Any] = Field(default_factory=dict)
 
 
 _CONFIG: AppConfig | None = None
@@ -71,9 +90,12 @@ def load_config(force: bool = False) -> AppConfig:
             if isinstance(raw, dict):
                 data = raw
 
+    # Ignore legacy wecom product config except for logging
+    if data.pop("wecom", None) is not None:
+        pass
+
     cfg = AppConfig.model_validate(data)
 
-    # Environment overrides (never commit real secrets)
     if os.environ.get("ADMIN_TOKEN"):
         cfg.adminToken = os.environ["ADMIN_TOKEN"]
     if os.environ.get("DATABASE_URL"):
@@ -82,10 +104,15 @@ def load_config(force: bool = False) -> AppConfig:
         cfg.onebot.accessToken = os.environ["ONEBOT_ACCESS_TOKEN"]
     if os.environ.get("ONEBOT_API_BASE"):
         cfg.onebot.apiBase = os.environ["ONEBOT_API_BASE"]
-    if os.environ.get("WECOM_WEBHOOK_URL"):
-        cfg.wecom.webhookUrl = os.environ["WECOM_WEBHOOK_URL"]
-        if cfg.wecom.webhookUrl:
-            cfg.wecom.enabled = True
+    if os.environ.get("QQ_BOT_APP_ID"):
+        cfg.qqofficial.appId = os.environ["QQ_BOT_APP_ID"]
+    if os.environ.get("QQ_BOT_SECRET"):
+        cfg.qqofficial.secret = os.environ["QQ_BOT_SECRET"]
+    if os.environ.get("BOT_NOTIFY_URL"):
+        cfg.qqofficial.notifyUrl = os.environ["BOT_NOTIFY_URL"]
+    send_img = os.environ.get("QQ_BOT_SEND_IMAGES")
+    if send_img is not None:
+        cfg.qqofficial.sendImages = send_img.strip().lower() in ("1", "true", "yes", "on")
 
     _CONFIG = cfg
     return cfg

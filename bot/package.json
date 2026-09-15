@@ -1,0 +1,25 @@
+{
+  "name": "price-watch-bot",
+  "version": "0.2.0",
+  "private": true,
+  "description": "QQ Official Open Platform bot for price-watch (WebSocket outbound)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "qq-official-bot": "^1.3.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

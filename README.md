@@ -1,28 +1,76 @@
 # 到手价监控（price-watch）
 
-个人用的 **京东 / 淘宝 / 拼多多** 商品「到手价」监控 Web 应用：浏览器管理、Docker Compose 部署，支持 **QQ（OneBot v11）** 与 **企业微信群机器人** 推送告警。
+个人用的 **京东 / 淘宝 / 拼多多**「到手价」监控：**QQ 官方开放平台 Bot**（好友私聊命令）为主，本机 **localhost Web** 仅调试/管理。
 
 > **诚实声明**：自动抓取可能违反电商平台服务条款，且接口随时失效；本项目仅供个人学习与自用，**不保证**价格准确性或抓取成功率。淘宝/拼多多默认需手动更新价格。
 
-## 功能（MVP）
+## 架构
 
-- 中文 Web 管理界面（FastAPI + Jinja2）
-- 商品 CRUD：名称、平台、链接、SKU、目标价、检查间隔、启用开关
-- 到手价模型：`标价 − 券面额 − 满减估算`；返利估算单独展示、不计入到手价
-- 价格历史 + 简易 sparkline
-- 告警：低于目标价，或较上次下降 X% / X 元
-- 通知：
-  - `qq_onebot`：OneBot v11 HTTP API（NapCat / go-cqhttp / Lagrange）
-  - `wecom_webhook`：企业微信群机器人 Webhook（markdown/text）
-- **个人微信没有官方 Bot API**，请使用企业微信群机器人
+| 服务 | 职责 | 网络 |
+|------|------|------|
+| `app`（Python FastAPI） | SQLite、调度抓价、调试 Web、内部 REST `/api/bot/*` | 仅 `127.0.0.1:8080` |
+| `bot`（Node + `qq-official-bot`） | QQ 官方 **WebSocket 出站**、私聊命令、主动推送告警 | **无对外端口** |
 
-## 平台适配
+告警只推送给监控的归属用户（`owner_openid`）。
 
-| 平台 | 自动拉取 | 说明 |
-|------|----------|------|
-| 京东 `jd` | 尽力而为 | 调用公开价格接口模式；被拦时回退「需手动更新」，仍可定时对照上次价格，详情页有「更新价格」 |
-| 淘宝 `taobao` | 否 | 存根适配器，明确标记「需手动更新」 |
-| 拼多多 `pdd` | 否 | 同上 |
+**不做**：个人微信 / 企业微信产品路径。OneBot（NapCat 等）已降级，默认关闭。
+
+## 为什么没有公网端口？
+
+QQ 官方开放平台在 **WebSocket** 模式下由机器人**主动出站**连接腾讯网关，因此：
+
+- **不需要**把 webhook 暴露到公网
+- `docker-compose` 只把 Web 绑在 `127.0.0.1:8080`（本机调试）
+- `bot` 服务不发布任何 ports
+
+## 创建 QQ 开放平台机器人
+
+1. 打开 [QQ 开放平台](https://q.qq.com/) / QQ 机器人文档，创建机器人应用。
+2. 获取 **AppID** 与 **AppSecret（Secret）**。
+3. 订阅/启用相关能力，意图使用 **`GROUP_AND_C2C_EVENT`**（私聊 C2C + 群，与本项目一致）。
+4. 连接方式选 **WebSocket**（不要用需公网回调的 Webhook）。
+5. 将 AppID / Secret 写入本地 `.env`（**不要提交到 Git**）：
+
+```bash
+cp .env.example .env
+# 编辑 .env：
+# QQ_BOT_APP_ID=你的AppID
+# QQ_BOT_SECRET=你的Secret
+# ADMIN_TOKEN=随机长字符串   # 建议设置
+```
+
+6. 复制配置并填写好友白名单（openid）：
+
+```bash
+cp config.example.yaml config.yaml
+# qqofficial.allowUsers: ["好友的openid", ...]
+# allowAll: false
+```
+
+首次联调可把 `qqofficial.sandbox: true`。openid 可在用户私聊机器人后从 bot 日志 / 平台后台查看。
+
+## 好友白名单
+
+```yaml
+qqofficial:
+  allowUsers: []    # 空 = 拒绝所有人（除非 allowAll: true）
+  allowAll: false
+```
+
+只有列表中的 openid 能用命令；告警也只发给监控归属者本人。
+
+## QQ 聊天命令（私聊 C2C；群消息同样解析）
+
+| 命令 | 说明 |
+|------|------|
+| `帮助` | 命令说明 |
+| `监控 <商品链接> [目标价]` | 为**当前用户**添加监控 |
+| `列表` | 我的监控（id / 标题 / 到手价 / 目标） |
+| `取消 <id>` | 删除我的监控 |
+| `历史 <id>` | 最近 N 条到手价 |
+| `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分；有图则尝试发图 |
+
+示例：`监控 https://item.jd.com/100012043978.html 99`
 
 ## 快速开始（Docker Compose）
 
@@ -30,97 +78,81 @@
 git clone https://github.com/camilavivan/price-watch.git
 cd price-watch
 cp config.example.yaml config.yaml
-cp .env.example .env   # 可选
-# 编辑 config.yaml：OneBot / 企微 / adminToken
+cp .env.example .env
+# 编辑 .env 与 config.yaml（AppID/Secret、allowUsers）
 docker compose up -d --build
 ```
 
-浏览器打开：http://localhost:8080  
-健康检查：http://localhost:8080/health
+- 调试 UI：http://127.0.0.1:8080 （仅本机）
+- 健康检查：http://127.0.0.1:8080/health
+- 数据：`./data`（SQLite）
 
-数据目录 `./data` 会持久化 SQLite 数据库。
+日常用户**只用 QQ**；Web 可查看全部监控（含各用户 `owner_openid`）。
 
 ### 本地开发（无 Docker）
 
 ```bash
+# App
 python3.12 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp config.example.yaml config.yaml
 mkdir -p data
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
+uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload
+
+# Bot（另开终端；需本机可访问 App）
+cd bot && npm install && npm run dev
+# 环境变量：QQ_BOT_APP_ID QQ_BOT_SECRET APP_API_BASE=http://127.0.0.1:8080 BOT_NOTIFY_PORT=8091
 ```
 
-## 鉴权
-
-- 默认：`adminToken` 为空 → **本机无鉴权**（适合家庭内网）
-- 设置 `adminToken` 或环境变量 `ADMIN_TOKEN` 后：
-  - 浏览器登录页写入 Cookie `admin_token`
-  - 或请求头：`X-Admin-Token: <token>`
-
-## 配置说明
-
-复制 `config.example.yaml` → `config.yaml`：
+## 配置要点
 
 ```yaml
-onebot:
+qqofficial:
   enabled: true
-  # Docker → 宿主机 NapCat：http://host.docker.internal:5700
-  # 同 compose 网络：http://napcat:5700
-  apiBase: http://host.docker.internal:5700
-  accessToken: ""
-  notifyGroups: []    # 群号
-  notifyUsers: []     # QQ 号
+  appId: ""
+  secret: ""
+  sandbox: false
+  mode: websocket
+  sendImages: true
+  allowUsers: []
+  allowAll: false
 
-wecom:
-  enabled: false
-  webhookUrl: ""      # 或环境变量 WECOM_WEBHOOK_URL
+web:
+  host: 127.0.0.1
+  port: 8080
+
+onebot:
+  enabled: false   # 可选遗留路径，默认关
 ```
 
-敏感项也可用 `.env` / 环境变量覆盖（**不要把真实 Token 提交到 Git**）：
+环境变量（勿提交真实值）：
 
+- `QQ_BOT_APP_ID` / `QQ_BOT_SECRET`
 - `ADMIN_TOKEN`
-- `ONEBOT_ACCESS_TOKEN`
-- `WECOM_WEBHOOK_URL`
-- `DATABASE_URL`（默认 SQLite；可选 Postgres：`postgresql+asyncpg://...`，需自行加依赖与 compose profile）
+- `DATABASE_URL`
+- `APP_API_BASE`（bot→app，默认 `http://app:8080`）
+- `BOT_NOTIFY_URL`（app→bot，默认 `http://bot:8091/notify`）
 
-## 对接 NapCat / go-cqhttp / Lagrange
+## 平台适配
 
-1. 在宿主机或同 compose 网络启动 OneBot 实现，开启 **HTTP API**（常见端口 `5700`）。
-2. 本服务只需**主动调用** `send_private_msg` / `send_group_msg`，一般**不需要**接收反向事件。
-3. `config.yaml`：
-   - 容器访问宿主机：`apiBase: http://host.docker.internal:5700`（compose 已配 `extra_hosts`）
-   - 同网络服务名：`apiBase: http://napcat:5700`
-4. 若 API 开启鉴权，填写 `accessToken` 或 `ONEBOT_ACCESS_TOKEN`（Bearer）。
-5. 配置 `notifyGroups` / `notifyUsers`。
+| 平台 | 自动拉取 | 说明 |
+|------|----------|------|
+| 京东 `jd` | 尽力而为 | 公开价格接口；失败则「需手动更新」 |
+| 淘宝 `taobao` | 否 | 存根，需手动/调试页更新 |
+| 拼多多 `pdd` | 否 | 同上 |
 
-`docker-compose.yml` 内附注释掉的 NapCat 示例服务，可按需启用。
+## 数据模型
 
-## 对接企业微信群机器人
-
-1. 企业微信群 → 添加群机器人 → 复制 Webhook 地址。
-2. `wecom.enabled: true`，`webhookUrl` 填入；或设环境变量 `WECOM_WEBHOOK_URL`。
-3. 告警以 markdown 发送（失败时回退 text）。
-
-> 个人微信无官方开放的群机器人/Bot API，请使用企业微信。
-
-## 添加商品
-
-1. 打开 Web UI →「添加商品」
-2. 选择平台、填写名称与链接；京东建议填 SKU 或使用 `item.jd.com/{sku}.html` 链接
-3. 填写目标到手价；券/满减可先手工估算
-4. 淘宝/拼多多：在详情页用「更新价格」录入当前标价与优惠
-5. 京东：可点「立即检查」尝试自动拉标价，再补券/满减
-
-## 告警消息内容
-
-标题、平台、原/新手到价、链接、时间，以及触发原因（低于目标 / 降幅）。
+- 商品带 `owner_openid`（QQ 用户 id）
+- 同一用户同一 `url` 唯一
+- 告警经 bot 主动私聊该 openid（含标题、到手价 old→new、链接、短历史；有 `image_url` 时尝试 `segment.image`，失败回退文字）
 
 ## 技术栈
 
-- Python 3.12、FastAPI、Jinja2、SQLAlchemy（asyncio）+ SQLite
-- APScheduler（与 Web 同进程）
-- httpx、Docker Compose
+- **app**：Python 3.12、FastAPI、SQLAlchemy async、APScheduler、Jinja2
+- **bot**：Node 20、`qq-official-bot`、TypeScript
+- Docker Compose
 
 ## License
 
-MIT — 请自行遵守各电商平台与即时通讯服务的使用条款。
+MIT — 请自行遵守各电商平台与 QQ 开放平台使用条款。

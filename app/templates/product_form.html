@@ -26,6 +26,11 @@
       <label for="url">商品链接</label>
       <input type="url" id="url" name="url" placeholder="https://item.jd.com/xxxx.html" value="{{ product.url if product else '' }}" />
     </div>
+    <div>
+      <label for="owner_openid">归属 QQ openid（可选；QQ 监控用户自动填写）</label>
+      <input type="text" id="owner_openid" name="owner_openid" placeholder="好友 openid" value="{{ product.owner_openid if product and product.owner_openid else '' }}" />
+      <p class="hint">告警只推送给该 openid；留空则不走 QQ 官方推送</p>
+    </div>
     <div class="form-row">
       <div>
         <label for="list_price">标价 / 原价（元）</label>

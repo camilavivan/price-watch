@@ -1,39 +1,49 @@
 # price-watch 配置示例 — 复制为 config.yaml 后修改
+# 切勿把真实 AppID/Secret 提交到 Git；优先用环境变量 QQ_BOT_APP_ID / QQ_BOT_SECRET
 
 # 管理端鉴权：留空则本机无鉴权；设置后需 Cookie/Header: X-Admin-Token
+# Bot 调内部 API、以及 app→bot 告警推送也会带此 Token
 adminToken: ""
 
 # 数据库（也可由环境变量 DATABASE_URL 覆盖）
 databaseUrl: "sqlite+aiosqlite:///./data/pricewatch.db"
 
+# 调试 Web（compose 仅发布 127.0.0.1:8080）
+web:
+  host: 127.0.0.1
+  port: 8080
+
 # 调度器
 scheduler:
-  # 全局默认检查间隔（分钟）；商品可单独覆盖
   defaultIntervalMinutes: 60
-  # 启动后延迟多少秒开始第一次扫描
   startupDelaySeconds: 10
 
 # 到手价告警默认规则（商品可覆盖）
 alerts:
-  # 低于目标价时告警
   onBelowTarget: true
-  # 相对上次到手价下降百分比（0 表示关闭）
   dropPercent: 5
-  # 相对上次到手价下降金额（元，0 表示关闭）
   dropYuan: 0
 
-# OneBot v11（NapCat / go-cqhttp / Lagrange）
-onebot:
+# QQ 官方开放平台 Bot（主路径）
+# 使用 WebSocket 出站，无需公网入站端口 / webhook
+qqofficial:
   enabled: true
-  # Docker → 宿主机 OneBot：http://host.docker.internal:5700
-  # Docker → 同 compose 网络：http://napcat:5700
-  apiBase: "http://host.docker.internal:5700"
-  accessToken: ""         # 可选，API 鉴权 token
-  notifyGroups: []        # 群号列表，如 [123456789]
-  notifyUsers: []         # QQ 号列表，如 [10001]
+  appId: ""               # 或环境变量 QQ_BOT_APP_ID
+  secret: ""              # 或环境变量 QQ_BOT_SECRET
+  sandbox: false          # 首次联调可改 true
+  mode: websocket         # 固定 websocket，不要用 webhook（否则要暴露端口）
+  sendImages: true        # 告警/详情配图；失败回退纯文字
+  allowUsers: []          # 好友 openid 白名单；空且 allowAll=false 时拒绝所有人
+  allowAll: false         # 仅本地调试可 true；生产务必 false + 填 allowUsers
+  # app 容器推送告警到 bot（compose 默认 http://bot:8091/notify）
+  notifyUrl: "http://bot:8091/notify"
 
-# 企业微信群机器人 Webhook
-# 个人微信无官方 Bot API，请使用企业微信群机器人
-wecom:
+# OneBot v11（已降级，默认关闭；主路径为 qqofficial）
+onebot:
   enabled: false
-  webhookUrl: ""          # 或环境变量 WECOM_WEBHOOK_URL
+  apiBase: "http://host.docker.internal:5700"
+  accessToken: ""
+  notifyGroups: []
+  notifyUsers: []
+
+# 微信 / 企业微信：不做产品路径（已移除）

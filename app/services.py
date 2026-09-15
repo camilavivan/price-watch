@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import get_adapter
@@ -69,30 +69,37 @@ def format_alert(
     old_landing: Optional[float],
     new_landing: float,
     reason: str,
-) -> tuple[str, str]:
+) -> str:
     plat = PLATFORM_LABEL.get(product.platform, product.platform)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     old_s = f"¥{old_landing:.2f}" if old_landing is not None else "—"
-    plain = (
+    return (
         f"【到手价告警】{product.name}\n"
         f"平台：{plat}\n"
-        f"原到手价：{old_s}\n"
-        f"新手到价：¥{new_landing:.2f}\n"
+        f"到手价：{old_s} → ¥{new_landing:.2f}\n"
         f"原因：{reason}\n"
         f"链接：{product.url or '—'}\n"
         f"时间：{now}"
     )
-    md = (
-        f"**到手价告警**\n"
-        f"> 商品：{product.name}\n"
-        f"> 平台：{plat}\n"
-        f"> 原到手价：{old_s}\n"
-        f"> 新手到价：<font color=\"warning\">¥{new_landing:.2f}</font>\n"
-        f"> 原因：{reason}\n"
-        f"> 链接：[打开]({product.url})\n"
-        f"> 时间：{now}"
+
+
+async def recent_history_points(
+    session: AsyncSession,
+    product_id: int,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    hq = await session.execute(
+        select(PriceHistory)
+        .where(PriceHistory.product_id == product_id)
+        .order_by(desc(PriceHistory.recorded_at))
+        .limit(limit)
     )
-    return plain, md
+    rows = list(hq.scalars().all())
+    out = []
+    for h in reversed(rows):
+        ts = h.recorded_at.strftime("%m-%d %H:%M") if h.recorded_at else "?"
+        out.append({"at": ts, "landing": h.landing_price})
+    return out
 
 
 async def record_history(
@@ -152,7 +159,6 @@ async def apply_price_update(
     product.last_check_at = product.updated_at
     if source == "manual":
         product.last_error = None
-        # keep needs_manual for stub platforms
         adapter = get_adapter(product.platform)
         if not adapter.supports_auto:
             product.needs_manual = True
@@ -166,8 +172,28 @@ async def apply_price_update(
     if send_alert and product.landing_price is not None:
         alerted, reason = should_alert(product, old_landing, product.landing_price)
         if alerted:
-            plain, md = format_alert(product, old_landing, product.landing_price, reason)
-            await notify_all(plain, md)
+            plain = format_alert(product, old_landing, product.landing_price, reason)
+            history = await recent_history_points(session, product.id, limit=5)
+            hist_lines = "\n".join(
+                f"  {h['at']}  ¥{h['landing']:.2f}" for h in history
+            )
+            if hist_lines:
+                plain = f"{plain}\n近期价格：\n{hist_lines}"
+            payload = {
+                "title": product.name,
+                "old_landing": old_landing,
+                "new_landing": product.landing_price,
+                "url": product.url,
+                "reason": reason,
+                "history": history,
+                "image_url": product.image_url,
+                "product_id": product.id,
+            }
+            await notify_all(
+                plain,
+                owner_openid=product.owner_openid,
+                alert_payload=payload,
+            )
 
     return {
         "product_id": product.id,
@@ -186,7 +212,6 @@ async def check_product(session: AsyncSession, product: Product) -> dict:
     if not result.ok:
         product.needs_manual = True
         product.last_error = result.error
-        # Still schedule against last known — no price change, no alert
         await session.commit()
         return {
             "product_id": product.id,
@@ -197,7 +222,7 @@ async def check_product(session: AsyncSession, product: Product) -> dict:
 
     product.needs_manual = False
     product.last_error = None
-    if result.title and not product.name:
+    if result.title and (not product.name or product.name.startswith(("京东商品", "淘宝商品", "拼多多商品"))):
         product.name = result.title
 
     return await apply_price_update(

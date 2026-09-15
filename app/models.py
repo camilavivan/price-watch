@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -13,6 +13,10 @@ from app.db import Base
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (
+        UniqueConstraint("owner_openid", "url", name="uq_owner_url"),
+        Index("ix_products_owner_openid", "owner_openid"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -20,16 +24,22 @@ class Product(Base):
     url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     sku_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
+    # QQ 官方开放平台用户 openid；Web 管理端添加可为空
+    owner_openid: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
     # Price components (yuan)
-    list_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 标价/原价
-    coupon_amount: Mapped[float] = mapped_column(Float, default=0.0)  # 券面额
-    full_reduction: Mapped[float] = mapped_column(Float, default=0.0)  # 满减估算
-    rebate_estimate: Mapped[float] = mapped_column(Float, default=0.0)  # 返利估算（单独展示）
-    landing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)  # 到手价
+    list_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    coupon_amount: Mapped[float] = mapped_column(Float, default=0.0)
+    full_reduction: Mapped[float] = mapped_column(Float, default=0.0)
+    rebate_estimate: Mapped[float] = mapped_column(Float, default=0.0)
+    landing_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     target_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     check_interval_minutes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # Optional product image URL for QQ alerts
+    image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Adapter status
     last_check_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -64,5 +74,5 @@ class PriceHistory(Base):
     full_reduction: Mapped[float] = mapped_column(Float, default=0.0)
     rebate_estimate: Mapped[float] = mapped_column(Float, default=0.0)
     landing_price: Mapped[float] = mapped_column(Float, nullable=False)
-    source: Mapped[str] = mapped_column(String(32), default="check")  # check / manual
+    source: Mapped[str] = mapped_column(String(32), default="check")
     recorded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
