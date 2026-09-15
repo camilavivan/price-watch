@@ -152,7 +152,7 @@ alerts:
 
 若 `pip install` 出现 `files.pythonhosted.org` / `Read timed out`（常见于国内云主机）：
 
-**优先用国内镜像**（默认已写入 Dockerfile，重新 build 即可）：
+**优先用国内镜像**（默认腾讯云 PyPI；若遇 403 可在 `.env` 改成阿里云）：
 
 ```bash
 docker compose build --no-cache
