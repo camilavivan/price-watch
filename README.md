@@ -147,6 +147,31 @@ alerts:
 
 > **关于什么值得买（SMZDM）**：官方开放平台需商务邀请（联系 group-content@zhidemai.com），无自助开通。本项目**不依赖** SMZDM API，改用上述自采历史；若日后拿到对接密钥，可再另行接入。
 
+
+## 构建超时 / 本机代理
+
+若 `pip install` 出现 `files.pythonhosted.org` / `Read timed out`（常见于国内云主机）：
+
+**优先用国内镜像**（默认已写入 Dockerfile，重新 build 即可）：
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+**或使用宿主机代理**（Clash 等需允许「局域网连接 / Allow LAN」）：
+
+```bash
+# 写入 .env
+HTTP_PROXY=http://host.docker.internal:7890
+HTTPS_PROXY=http://host.docker.internal:7890
+
+docker compose build --no-cache
+docker compose up -d
+```
+
+注意：构建容器里的 `127.0.0.1` 不是宿主机，代理地址请用 `host.docker.internal`。
+
 ## 平台适配
 
 | 平台 | 自动拉取 | 说明 |
