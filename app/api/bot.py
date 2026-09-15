@@ -7,17 +7,16 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, select
+from sqlalchemy import desc, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters import get_adapter
-from app.adapters.jd import extract_sku_id
 from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
-from app.platform_detect import detect_platform, guess_name_from_url
-from app.services import check_product, compute_local_history_stats, sparkline
+from app.services import check_watch, compute_local_history_stats, sparkline
+from app.url_normalize import UnknownPlatformError, guess_name_from_url, normalize_url
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/bot", tags=["bot"])
@@ -44,7 +43,8 @@ def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, An
         "id": p.id,
         "name": p.name,
         "platform": p.platform,
-        "url": p.url,
+        "url": p.canonical_url or p.url,
+        "canonical_url": p.canonical_url,
         "sku_id": p.sku_id,
         "owner_openid": p.owner_openid,
         "list_price": p.list_price,
@@ -77,6 +77,41 @@ def _stats_dict(stats) -> dict[str, Any]:
     }
 
 
+async def _find_existing(
+    db: AsyncSession,
+    openid: str,
+    *,
+    platform: str,
+    sku_id: Optional[str],
+    url: str,
+    canonical_url: str,
+) -> Optional[Product]:
+    if sku_id:
+        q = await db.execute(
+            select(Product).where(
+                Product.owner_openid == openid,
+                Product.platform == platform,
+                Product.sku_id == sku_id,
+            )
+        )
+        found = q.scalar_one_or_none()
+        if found:
+            return found
+    # Fall back to url / canonical_url match
+    q = await db.execute(
+        select(Product).where(
+            Product.owner_openid == openid,
+            or_(
+                Product.url == url,
+                Product.url == canonical_url,
+                Product.canonical_url == canonical_url,
+                Product.canonical_url == url,
+            ),
+        )
+    )
+    return q.scalar_one_or_none()
+
+
 @router.get("/health")
 async def bot_health(_: None = Depends(_require_admin_token)):
     return {"ok": True, "service": "price-watch-api"}
@@ -104,28 +139,41 @@ async def create_watch(
     _: None = Depends(_require_admin_token),
 ):
     openid = body.openid.strip()
-    url = body.url.strip()
-    platform = (body.platform or detect_platform(url) or "").lower()
+    raw_url = body.url.strip()
+    try:
+        info = normalize_url(raw_url, require_known_platform=True)
+    except UnknownPlatformError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    platform = (body.platform or info.platform or "").lower()
     if platform not in ("jd", "taobao", "pdd"):
         raise HTTPException(
             status_code=400,
-            detail="无法识别平台，请使用京东 / 淘宝 / 拼多多商品链接",
+            detail="无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接",
         )
 
-    # Dedup by owner+url
-    existing = await db.execute(
-        select(Product).where(Product.owner_openid == openid, Product.url == url)
+    canonical = info.canonical_url
+    sku = info.sku_id
+    store_url = canonical or raw_url
+
+    existing = await _find_existing(
+        db,
+        openid,
+        platform=platform,
+        sku_id=sku,
+        url=raw_url,
+        canonical_url=canonical,
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="你已监控该链接")
+    if existing:
+        raise HTTPException(status_code=409, detail="你已监控该商品")
 
     adapter = get_adapter(platform)
-    sku = extract_sku_id(url, None) if platform == "jd" else None
-    name = (body.name or "").strip() or guess_name_from_url(url, platform)
+    name = (body.name or "").strip() or guess_name_from_url(raw_url, platform)
     product = Product(
         name=name,
         platform=platform,
-        url=url,
+        url=store_url,
+        canonical_url=canonical,
         sku_id=sku,
         owner_openid=openid,
         target_price=body.target_price,
@@ -137,12 +185,12 @@ async def create_watch(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(status_code=409, detail="你已监控该链接")
+        raise HTTPException(status_code=409, detail="你已监控该商品")
     await db.refresh(product)
 
     # Best-effort immediate check
     try:
-        await check_product(db, product)
+        await check_watch(db, product)
         await db.refresh(product)
     except Exception as e:
         logger.warning("initial check failed for %s: %s", product.id, e)
@@ -223,5 +271,3 @@ async def watch_history(
         "history": history,
         "history_stats": _stats_dict(stats),
     }
-
-

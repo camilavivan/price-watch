@@ -19,6 +19,11 @@ scheduler:
   defaultIntervalMinutes: 60
   startupDelaySeconds: 10
 
+# 抓取礼貌限速（平台 adapter 请求之间）
+fetch:
+  rateLimitSeconds: 1.5
+  priceNoisePercent: 0.5   # 小于该幅度的波动不触发「较上次下降」类告警
+
 # 到手价告警默认规则（商品可覆盖）
 alerts:
   onBelowTarget: true

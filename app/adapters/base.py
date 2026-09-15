@@ -13,6 +13,7 @@ class FetchResult:
     coupon_amount: Optional[float] = None
     full_reduction: Optional[float] = None
     title: Optional[str] = None
+    image_url: Optional[str] = None
     error: Optional[str] = None
     needs_manual: bool = False
     raw_note: Optional[str] = None

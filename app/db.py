@@ -51,20 +51,70 @@ async def _migrate_sqlite(conn) -> None:
         alters.append("ALTER TABLE products ADD COLUMN owner_openid VARCHAR(128)")
     if "image_url" not in cols:
         alters.append("ALTER TABLE products ADD COLUMN image_url TEXT")
+    if "canonical_url" not in cols:
+        alters.append("ALTER TABLE products ADD COLUMN canonical_url TEXT")
     for stmt in alters:
         logger.info("SQLite migrate: %s", stmt)
         await conn.execute(text(stmt))
-    # Unique index for (owner, url) — ignore if already present
+
+    # Backfill canonical_url from url where empty
     try:
         await conn.execute(
             text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_owner_url "
-                "ON products(owner_openid, url) "
-                "WHERE owner_openid IS NOT NULL AND url != ''"
+                "UPDATE products SET canonical_url = url "
+                "WHERE (canonical_url IS NULL OR canonical_url = '') "
+                "AND url IS NOT NULL AND url != ''"
             )
         )
     except Exception as e:
-        logger.warning("Could not create uq_owner_url index: %s", e)
+        logger.warning("canonical_url backfill skipped: %s", e)
+
+    # Drop legacy rigid unique if present (table-level uq_owner_url from older SQLAlchemy)
+    # SQLite cannot DROP CONSTRAINT easily; we rely on partial indexes going forward.
+    # Remove old unique index name if it blocks sku-based duplicates of cleaned URLs.
+    for idx in ("uq_owner_url", "sqlite_autoindex_products_1"):
+        try:
+            await conn.execute(text(f"DROP INDEX IF EXISTS {idx}"))
+        except Exception as e:
+            logger.debug("drop index %s: %s", idx, e)
+
+    # Unique: (owner, platform, sku) when sku known
+    try:
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_owner_platform_sku "
+                "ON products(owner_openid, platform, sku_id) "
+                "WHERE owner_openid IS NOT NULL AND sku_id IS NOT NULL AND sku_id != ''"
+            )
+        )
+    except Exception as e:
+        logger.warning("Could not create uq_owner_platform_sku: %s", e)
+
+    # Unique: (owner, url) when sku unknown
+    try:
+        await conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_owner_url_nosku "
+                "ON products(owner_openid, url) "
+                "WHERE owner_openid IS NOT NULL "
+                "AND (sku_id IS NULL OR sku_id = '') "
+                "AND url != ''"
+            )
+        )
+    except Exception as e:
+        logger.warning("Could not create uq_owner_url_nosku: %s", e)
+
+    # Also keep a non-unique helpful index on canonical_url
+    try:
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_products_canonical_url "
+                "ON products(canonical_url)"
+            )
+        )
+    except Exception as e:
+        logger.warning("Could not create canonical_url index: %s", e)
+
     try:
         await conn.execute(
             text(

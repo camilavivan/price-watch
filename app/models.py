@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -14,14 +14,18 @@ from app.db import Base
 class Product(Base):
     __tablename__ = "products"
     __table_args__ = (
-        UniqueConstraint("owner_openid", "url", name="uq_owner_url"),
+        # Logical uniqueness is enforced via SQLite partial indexes in db._migrate_sqlite:
+        #   (owner_openid, platform, sku_id) when sku known
+        #   (owner_openid, url) when sku unknown
         Index("ix_products_owner_openid", "owner_openid"),
+        Index("ix_products_platform_sku", "platform", "sku_id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     platform: Mapped[str] = mapped_column(String(32), nullable=False)  # jd / taobao / pdd
     url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    canonical_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     sku_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     # QQ 官方开放平台用户 openid；Web 管理端添加可为空

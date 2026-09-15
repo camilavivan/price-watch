@@ -1,4 +1,4 @@
-"""Platform price adapters."""
+"""Platform price adapters (collector layer)."""
 
 from __future__ import annotations
 

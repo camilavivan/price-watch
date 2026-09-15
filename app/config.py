@@ -15,6 +15,13 @@ class SchedulerConfig(BaseModel):
     startupDelaySeconds: int = 10
 
 
+class FetchConfig(BaseModel):
+    """Outbound fetch politeness (adapter rate limit between requests)."""
+    rateLimitSeconds: float = 1.5
+    # Ignore drop alerts when relative change is within this noise band (MarketEye-inspired)
+    priceNoisePercent: float = 0.5
+
+
 class AlertsConfig(BaseModel):
     onBelowTarget: bool = True
     dropPercent: float = 5.0
@@ -60,6 +67,7 @@ class AppConfig(BaseModel):
     databaseUrl: str = "sqlite+aiosqlite:///./data/pricewatch.db"
     web: WebConfig = Field(default_factory=WebConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    fetch: FetchConfig = Field(default_factory=FetchConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     qqofficial: QQOfficialConfig = Field(default_factory=QQOfficialConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)

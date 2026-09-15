@@ -97,12 +97,17 @@ def should_alert(
 
     if old_landing is not None and old_landing > 0:
         delta = old_landing - new_landing
-        if drop_yuan and drop_yuan > 0 and delta >= drop_yuan:
-            reasons.append(f"较上次下降 ¥{delta:.2f}")
-        if drop_pct and drop_pct > 0:
-            pct = (delta / old_landing) * 100
-            if pct >= drop_pct:
-                reasons.append(f"较上次下降 {pct:.1f}%")
+        noise = float(getattr(get_config().fetch, "priceNoisePercent", 0.5) or 0)
+        # Ignore tiny upward/sideways noise; only evaluate drops beyond noise band
+        noise_floor = old_landing * (noise / 100.0) if noise > 0 else 0.0
+        meaningful_drop = delta > max(noise_floor, 1e-9)
+        if meaningful_drop:
+            if drop_yuan and drop_yuan > 0 and delta >= drop_yuan:
+                reasons.append(f"较上次下降 ¥{delta:.2f}")
+            if drop_pct and drop_pct > 0:
+                pct = (delta / old_landing) * 100
+                if pct >= drop_pct:
+                    reasons.append(f"较上次下降 {pct:.1f}%")
 
     if cfg.onHistoryLow and hist_stats and hist_stats.lowest is not None and hist_stats.count > 0:
         tol = cfg.historyLowTolerancePercent
@@ -151,7 +156,8 @@ def format_alert(
         sp = sparkline(hist_stats.prices + [new_landing])
         if sp:
             lines.append(f"走势：{sp}")
-    lines.append(f"链接：{product.url or '—'}")
+    link = product.canonical_url or product.url or "—"
+    lines.append(f"链接：{link}")
     lines.append(f"时间：{now}")
     return "\n".join(lines)
 
@@ -331,7 +337,7 @@ async def apply_price_update(
                 "title": product.name,
                 "old_landing": old_landing,
                 "new_landing": product.landing_price,
-                "url": product.url,
+                "url": product.canonical_url or product.url,
                 "reason": reason,
                 "history": history,
                 "image_url": product.image_url,
@@ -369,9 +375,11 @@ async def apply_price_update(
     }
 
 
-async def check_product(session: AsyncSession, product: Product) -> dict:
+async def check_watch(session: AsyncSession, product: Product) -> dict:
+    """MarketEye-style engine: fetch → update → history → alerts → notify."""
     adapter = get_adapter(product.platform)
-    result = await adapter.fetch(product.url or "", product.sku_id)
+    fetch_url = product.canonical_url or product.url or ""
+    result = await adapter.fetch(fetch_url, product.sku_id)
     product.last_check_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
     if not result.ok:
@@ -387,8 +395,15 @@ async def check_product(session: AsyncSession, product: Product) -> dict:
 
     product.needs_manual = False
     product.last_error = None
-    if result.title and (not product.name or product.name.startswith(("京东商品", "淘宝商品", "拼多多商品"))):
+    if result.title and (
+        not product.name
+        or product.name.startswith(("京东商品", "淘宝商品", "拼多多商品"))
+    ):
         product.name = result.title
+    if getattr(result, "image_url", None) and not product.image_url:
+        product.image_url = result.image_url
+    if result.raw_note:
+        product.note = result.raw_note
 
     return await apply_price_update(
         session,
@@ -399,6 +414,11 @@ async def check_product(session: AsyncSession, product: Product) -> dict:
         source="check",
         send_alert=True,
     )
+
+
+async def check_product(session: AsyncSession, product: Product) -> dict:
+    """Alias for check_watch (backward compatible)."""
+    return await check_watch(session, product)
 
 
 async def check_due_products(session: AsyncSession) -> list[dict]:

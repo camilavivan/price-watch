@@ -22,7 +22,8 @@ from app.config import get_config, load_config
 from app.db import get_db, init_db
 from app.models import PriceHistory, Product
 from app.scheduler import start_scheduler, stop_scheduler
-from app.services import apply_price_update, check_product, compute_landing
+from app.services import apply_price_update, check_product, check_watch, compute_landing
+from app.url_normalize import normalize_url
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
@@ -58,7 +59,7 @@ async def lifespan(app: FastAPI):
     stop_scheduler()
 
 
-app = FastAPI(title="到手价监控", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="到手价监控", version="0.3.0", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(bot_router)
 
@@ -165,6 +166,14 @@ async def product_create(
 ):
     require_auth(request)
     adapter = get_adapter(platform)
+    raw_url = (url or "").strip()
+    info = normalize_url(raw_url) if raw_url else None
+    resolved_sku = (sku_id or "").strip() or (info.sku_id if info else None)
+    canonical = info.canonical_url if info else (raw_url or None)
+    store_url = canonical or raw_url
+    if info and info.platform and info.platform != platform:
+        # Prefer form platform but keep normalized sku/url when same family
+        pass
     lp = float(list_price) if list_price not in (None, "") else None
     coupon = float(coupon_amount or 0)
     fr = float(full_reduction or 0)
@@ -173,8 +182,9 @@ async def product_create(
     product = Product(
         name=name.strip(),
         platform=platform,
-        url=(url or "").strip(),
-        sku_id=(sku_id or "").strip() or None,
+        url=store_url,
+        canonical_url=canonical,
+        sku_id=resolved_sku,
         owner_openid=(owner_openid or "").strip() or None,
         list_price=lp,
         coupon_amount=coupon,
@@ -269,8 +279,11 @@ async def product_update(
     adapter = get_adapter(platform)
     product.name = name.strip()
     product.platform = platform
-    product.url = (url or "").strip()
-    product.sku_id = (sku_id or "").strip() or None
+    raw_url = (url or "").strip()
+    info = normalize_url(raw_url) if raw_url else None
+    product.url = (info.canonical_url if info else raw_url) or raw_url
+    product.canonical_url = info.canonical_url if info else (raw_url or None)
+    product.sku_id = (sku_id or "").strip() or (info.sku_id if info else None)
     product.owner_openid = (owner_openid or "").strip() or None
     product.list_price = float(list_price) if list_price not in (None, "") else None
     product.coupon_amount = float(coupon_amount or 0)

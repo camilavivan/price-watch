@@ -1,21 +1,52 @@
-"""Taobao / Tmall stub — requires manual price update."""
+"""Taobao / Tmall — try generic HTML extract; else needs_manual."""
 
 from __future__ import annotations
 
+import logging
 from typing import Optional
 
 from app.adapters.base import FetchResult
+from app.adapters.generic_html import fetch_and_extract
+from app.adapters.rate_limit import wait_rate_limit
+from app.url_normalize import extract_taobao_id, normalize_url
+
+logger = logging.getLogger(__name__)
 
 
 class TaobaoAdapter:
     platform = "taobao"
     display_name = "淘宝/天猫"
-    supports_auto = False
+    # Soft auto: we attempt HTML; often fails → manual
+    supports_auto = True
 
     async def fetch(self, url: str, sku_id: Optional[str] = None) -> FetchResult:
+        info = normalize_url(url or "")
+        sku = (sku_id or info.sku_id or extract_taobao_id(url or "") or "").strip() or None
+        page = info.canonical_url or (url or "").strip()
+        if not page:
+            return FetchResult(
+                ok=False,
+                needs_manual=True,
+                error="缺少淘宝/天猫商品链接",
+            )
+
+        await wait_rate_limit()
+        result = await fetch_and_extract(page)
+        if result.ok and result.price:
+            return FetchResult(
+                ok=True,
+                list_price=result.price,
+                title=result.title,
+                image_url=result.image_url,
+                needs_manual=False,
+                raw_note="淘宝/天猫 HTML 尽力解析（不稳定，失败请手动）",
+            )
+
         return FetchResult(
             ok=False,
             needs_manual=True,
-            error="淘宝/天猫需手动更新价格（无稳定公开接口，自动抓取易违反平台条款）",
+            error=result.error
+            or "淘宝/天猫需手动更新价格（无稳定公开接口，自动抓取易失败）",
+            title=result.title,
             raw_note="需手动更新",
         )
