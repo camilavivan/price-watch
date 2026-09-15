@@ -75,11 +75,13 @@ export async function createWatch(
   openid: string,
   url: string,
   targetPrice?: number,
+  name?: string,
 ): Promise<Watch> {
   const data = await request<{ watch: Watch }>(cfg, 'POST', '/api/bot/watches', {
     openid,
     url,
     target_price: targetPrice ?? null,
+    name: name || undefined,
   });
   return data.watch;
 }

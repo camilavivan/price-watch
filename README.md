@@ -55,6 +55,24 @@
 
 未知平台会拒绝并提示使用三大电商链接。
 
+### 短链展开（QQ 分享粘贴）
+
+`resolve_url` 对 `m.tb.cn` / `3.jd.hk` / `u.jd.com` / `s.click.taobao.com` 等短链做 **多跳展开**（最多 8 跳）：
+
+1. 用浏览器 UA 发 GET（必要时对 `tb.cn` 再试一次移动 UA）
+2. 若有 `Location` 头则跟随；否则从 HTML 解析下一跳：
+   - `var url = '...'`
+   - `window.location` / `location.href`
+   - meta refresh `url=`
+   - `og:url`
+   - 页面内第一条商品链接（`item.taobao.com` / `detail.tmall.com` / `item.jd.com` 等）
+3. 京东最终页尽量抽出 `skuId` → `https://item.jd.com/{sku}.html`
+4. 淘宝/天猫抽出 `id=` → `item.taobao.com` 或 `detail.tmall.com`
+
+分享文案里的 `https://m.tb.cn/...` / `https://3.jd.hk/...` 会被自动提取（即使夹在 💲🔐、淘口令、【京东】等杂质中）。「标题」/【标题】也会作为监控名称提示传入。
+
+**限制**：纯淘口令（只有口令、**没有** `m.tb.cn` 等 URL）需要淘宝联盟等付费/授权 API，**本项目不支持**。请粘贴带短链的分享文案。
+
 ## 抓取适配器
 
 | 平台 | 策略 |

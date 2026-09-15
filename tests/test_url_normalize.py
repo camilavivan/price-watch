@@ -7,10 +7,14 @@ import unittest
 from app.url_normalize import (
     UnknownPlatformError,
     detect_platform,
+    extract_best_url,
     extract_first_url,
     extract_jd_sku,
+    extract_jd_sku_from_html,
     extract_pdd_goods_id,
     extract_taobao_id,
+    extract_title_hint,
+    extract_url_from_html,
     is_short_link,
     normalize_url,
     strip_tracking_params,
@@ -43,6 +47,7 @@ class TestUrlNormalize(unittest.TestCase):
         self.assertEqual(detect_platform("https://p.pinduoduo.com/xxx"), "pdd")
         self.assertTrue(is_short_link("https://m.tb.cn/h.xxx"))
         self.assertTrue(is_short_link("https://3.jd.hk/abc"))
+        self.assertTrue(is_short_link("https://s.click.taobao.com/t?e=xxx"))
         self.assertFalse(is_short_link("https://item.jd.com/100.html"))
 
     def test_jd_sku_and_canonical(self):
@@ -143,6 +148,30 @@ class TestUrlNormalize(unittest.TestCase):
         self.assertEqual(url, "https://m.tb.cn/h.5KxYzW")
         self.assertEqual(detect_platform(url), "taobao")
 
+    def test_extract_url_with_taokouling_junk_emoji(self):
+        """淘口令 pastes often wrap URL with 💲🔐 and Chinese — still extract m.tb.cn."""
+        paste = "监控 59💲4luGT8mrU6g🔐 https://m.tb.cn/h.8rOD8bO  CZ028 粉丝福利购"
+        url = extract_first_url(paste)
+        self.assertEqual(url, "https://m.tb.cn/h.8rOD8bO")
+        self.assertEqual(detect_platform(url), "taobao")
+        self.assertTrue(is_short_link(url))
+
+    def test_extract_url_jd_example_paste(self):
+        paste = (
+            "监控 【京东】https://3.jd.hk/1034a-WN "
+            "「【询客服领券】a2紫白金奶粉2段」"
+        )
+        url = extract_first_url(paste)
+        self.assertEqual(url, "https://3.jd.hk/1034a-WN")
+        self.assertEqual(detect_platform(url), "jd")
+
+    def test_prefer_commerce_short_host(self):
+        paste = (
+            "see https://www.example.com/promo and then "
+            "https://m.tb.cn/h.abc123 for the deal"
+        )
+        self.assertEqual(extract_best_url(paste), "https://m.tb.cn/h.abc123")
+
     def test_extract_url_strips_trailing_paren_in_text(self):
         paste = "请看 (https://item.jd.com/100012043978.html) 谢谢"
         url = extract_first_url(paste)
@@ -155,6 +184,80 @@ class TestUrlNormalize(unittest.TestCase):
         self.assertEqual(info.platform, "jd")
         self.assertEqual(info.sku_id, "100012043978")
         self.assertEqual(info.canonical_url, "https://item.jd.com/100012043978.html")
+
+    def test_extract_url_from_html_var_url(self):
+        html = """
+        <html><script>
+        var url = 'https://item.taobao.com/item.htm?id=12345678901';
+        location.href = url;
+        </script></html>
+        """
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://item.taobao.com/item.htm?id=12345678901",
+        )
+
+    def test_extract_url_from_html_var_url_double_quotes(self):
+        html = 'var url = "https://s.click.taobao.com/t?e=abc";'
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://s.click.taobao.com/t?e=abc",
+        )
+
+    def test_extract_url_from_html_meta_refresh(self):
+        html = (
+            '<html><head><meta http-equiv="refresh" '
+            'content="0;url=https://item.jd.com/100012043978.html"></head></html>'
+        )
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://item.jd.com/100012043978.html",
+        )
+
+    def test_extract_url_from_html_location_href(self):
+        html = "window.location.href = 'https://detail.tmall.com/item.htm?id=99887766554';"
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://detail.tmall.com/item.htm?id=99887766554",
+        )
+
+    def test_extract_url_from_html_og_url(self):
+        html = (
+            '<meta property="og:url" content="https://item.taobao.com/item.htm?id=11122233344">'
+        )
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://item.taobao.com/item.htm?id=11122233344",
+        )
+
+    def test_extract_url_from_html_item_link(self):
+        html = (
+            '<a href="https://item.jd.com/55566677788.html?utm_source=x">buy</a>'
+        )
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://item.jd.com/55566677788.html?utm_source=x",
+        )
+
+    def test_extract_jd_sku_from_html(self):
+        html = 'var pageConfig = { skuId: 100012043978, name: "x" };'
+        self.assertEqual(extract_jd_sku_from_html(html), "100012043978")
+
+    def test_extract_title_hint_corner_brackets(self):
+        paste = (
+            "监控 【京东】https://3.jd.hk/1034a-WN "
+            "「【询客服领券】a2紫白金奶粉2段」"
+        )
+        self.assertEqual(extract_title_hint(paste), "a2紫白金奶粉2段")
+
+    def test_extract_title_hint_skips_platform_tag(self):
+        paste = "【淘宝】https://m.tb.cn/h.xxx 粉丝福利购"
+        # bare 【淘宝】 skipped; no other title → None
+        self.assertIsNone(extract_title_hint(paste))
+
+    def test_extract_title_hint_simple(self):
+        paste = "监控 「有机纯牛奶」 https://item.jd.com/1.html"
+        self.assertEqual(extract_title_hint(paste), "有机纯牛奶")
 
 
 if __name__ == "__main__":

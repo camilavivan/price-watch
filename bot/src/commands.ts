@@ -50,9 +50,9 @@ function fmtStats(s: HistoryStats | null | undefined): string {
 
 /** Extract first http(s) URL; strip trailing punctuation from share pastes. */
 export function extractFirstUrl(text: string): string | null {
-  // Stop at whitespace, CJK, or common wrappers — share pastes glue junk to URLs
+  // Stop at whitespace, CJK, emoji, or common wrappers — share pastes glue junk to URLs
   const m = text.match(
-    /https?:\/\/[^\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef<>"'）)」』】\[\]{}|\\^`]+/i,
+    /https?:\/\/[^\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\u{1f300}-\u{1faff}\u2600-\u27bf<>"'）)」』】\[\]{}|\\^`]+/iu,
   );
   if (!m) return null;
   let url = m[0];
@@ -73,6 +73,78 @@ export function isCommerceUrl(url: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** Prefer known commerce short hosts when multiple URLs appear in paste. */
+export function extractBestUrl(text: string): string | null {
+  const re =
+    /https?:\/\/[^\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\u{1f300}-\u{1faff}\u2600-\u27bf<>"'）)」』】\[\]{}|\\^`]+/giu;
+  const found: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    let url = m[0];
+    let prev = '';
+    while (url !== prev) {
+      prev = url;
+      url = url.replace(TRAILING_URL_JUNK, '');
+    }
+    if (/^https?:\/\/.+/i.test(url) && !found.includes(url)) found.push(url);
+  }
+  if (!found.length) return extractFirstUrl(text);
+
+  const priority = (url: string): number => {
+    try {
+      const host = new URL(url).hostname.toLowerCase();
+      if (
+        /(?:^|\.)(?:m\.tb\.cn|tb\.cn|e\.tb\.cn|s\.tb\.cn|u\.jd\.com|3\.jd\.com|3\.jd\.hk|3\.cn|p\.pinduoduo\.com)$/i.test(
+          host,
+        ) ||
+        host.endsWith('.tb.cn')
+      ) {
+        return 0;
+      }
+      if (host.endsWith('.jd.hk') && !host.startsWith('item.')) return 1;
+      if (COMMERCE_HOST_RE.test(host)) return 5;
+    } catch {
+      /* ignore */
+    }
+    return 50;
+  };
+  found.sort((a, b) => priority(a) - priority(b));
+  return found[0];
+}
+
+/** Title hint from 「…」 / 【…】; strip coupon / platform prefixes. */
+export function extractTitleHint(text: string): string | undefined {
+  const skip = new Set(['京东', '淘宝', '天猫', '拼多多', 'JD', 'Taobao', 'Tmall']);
+  const prefixes = [
+    '询客服领券',
+    '点击领取',
+    '领券',
+    '粉丝福利购',
+    '福利购',
+    '京东',
+    '淘宝',
+    '天猫',
+    '拼多多',
+  ];
+  const candidates: string[] = [];
+  for (const m of text.matchAll(/「([^」]{2,80})」/g)) candidates.push(m[1].trim());
+  for (const m of text.matchAll(/【([^】]{2,80})】/g)) candidates.push(m[1].trim());
+  for (let raw of candidates) {
+    let t = raw.trim();
+    if (!t || skip.has(t)) continue;
+    const inner = t.match(/^【([^】]+)】$/);
+    if (inner) t = inner[1].trim();
+    t = t.replace(/^【[^】]{1,20}】\s*/, '').trim();
+    for (const pref of prefixes) {
+      if (t.startsWith(pref)) t = t.slice(pref.length).replace(/^[：:·—\-\s]+/, '');
+    }
+    t = t.trim();
+    if (!t || skip.has(t) || t.length < 2) continue;
+    if (/[\u4e00-\u9fffA-Za-z0-9]/.test(t)) return t.slice(0, 80);
+  }
+  return undefined;
 }
 
 function hasWatchKeyword(text: string): boolean {
@@ -110,12 +182,13 @@ async function doCreateWatch(
   openid: string,
   url: string,
   target?: number,
+  name?: string,
 ): Promise<CommandResult> {
   if (!/^https?:\/\//i.test(url)) {
     return { text: '请提供以 http(s):// 开头的商品链接' };
   }
   try {
-    const w = await createWatch(cfg, openid, url, target);
+    const w = await createWatch(cfg, openid, url, target, name);
     const placeholder = /^(京东商品|淘宝商品|拼多多商品)/.test(w.name || '');
     const hint = placeholder
       ? '\n提示：暂未解析到商品标题，将在下次检查时重试。'
@@ -166,10 +239,11 @@ export async function handleCommand(
   }
 
   // Watch: keyword + URL, or bare commerce URL (share paste)
-  const url = extractFirstUrl(text);
+  const url = extractBestUrl(text) || extractFirstUrl(text);
   if (url && (hasWatchKeyword(text) || isCommerceUrl(url))) {
     const target = extractTargetPrice(text, url);
-    return doCreateWatch(cfg, openid, url, target);
+    const name = extractTitleHint(text);
+    return doCreateWatch(cfg, openid, url, target, name);
   }
 
   let m = text.match(/^取消\s+(\d+)$/);
