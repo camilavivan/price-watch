@@ -48,5 +48,6 @@ class TaobaoAdapter:
             error=result.error
             or "淘宝/天猫需手动更新价格（无稳定公开接口，自动抓取易失败）",
             title=result.title,
+            image_url=result.image_url,
             raw_note="需手动更新",
         )

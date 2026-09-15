@@ -46,5 +46,6 @@ class PDDAdapter:
             needs_manual=True,
             error=result.error or "拼多多需手动更新价格（无稳定公开接口）",
             title=result.title,
+            image_url=result.image_url,
             raw_note="需手动更新",
         )

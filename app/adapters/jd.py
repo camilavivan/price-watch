@@ -11,6 +11,7 @@ import httpx
 
 from app.adapters.base import FetchResult
 from app.adapters.generic_html import BROWSER_UA, fetch_and_extract
+from app.adapters.product_meta import enrich_title_image
 from app.adapters.rate_limit import wait_rate_limit
 from app.url_normalize import extract_jd_sku
 
@@ -53,6 +54,12 @@ class JDAdapter:
 
         await wait_rate_limit()
 
+        page_url = (
+            url.strip()
+            if (url or "").strip().startswith("http")
+            else f"https://item.jd.com/{sku}.html"
+        )
+
         # 1) Best-effort public price API (often blocked / rate-limited)
         api_url = f"https://p.3.cn/prices/mgets?skuIds=J_{sku}&type=1"
         headers = {
@@ -71,9 +78,14 @@ class JDAdapter:
                         if price_str is not None:
                             price = float(str(price_str))
                             if price > 0:
+                                title, image_url = await enrich_title_image(
+                                    platform="jd", url=page_url, sku_id=sku
+                                )
                                 return FetchResult(
                                     ok=True,
                                     list_price=price,
+                                    title=title,
+                                    image_url=image_url,
                                     needs_manual=False,
                                     raw_note="来自京东公开价格接口（到手价需自行填券/满减）",
                                 )
@@ -81,22 +93,38 @@ class JDAdapter:
             logger.warning("JD API fetch failed sku=%s: %s", sku, e)
 
         # 2) Generic HTML fallback on item page
-        page_url = url.strip() if (url or "").strip().startswith("http") else f"https://item.jd.com/{sku}.html"
         html_result = await fetch_and_extract(page_url)
         if html_result.ok and html_result.price:
+            title = html_result.title
+            image_url = html_result.image_url
+            if not title or not image_url:
+                t2, i2 = await enrich_title_image(
+                    platform="jd", url=page_url, sku_id=sku
+                )
+                title = title or t2
+                image_url = image_url or i2
             return FetchResult(
                 ok=True,
                 list_price=html_result.price,
-                title=html_result.title,
-                image_url=html_result.image_url,
+                title=title,
+                image_url=image_url,
                 needs_manual=False,
                 raw_note="京东 HTML 兜底解析",
             )
+
+        # Failure path: still attach title/image if found
+        title = html_result.title
+        image_url = html_result.image_url
+        if not title or not image_url:
+            t2, i2 = await enrich_title_image(platform="jd", url=page_url, sku_id=sku)
+            title = title or t2
+            image_url = image_url or i2
 
         err = html_result.error or "京东价格接口与页面解析均失败"
         return FetchResult(
             ok=False,
             needs_manual=True,
             error=f"{err}，请手动更新价格",
-            title=html_result.title,
+            title=title,
+            image_url=image_url,
         )

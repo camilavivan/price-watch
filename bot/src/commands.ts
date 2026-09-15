@@ -116,6 +116,10 @@ async function doCreateWatch(
   }
   try {
     const w = await createWatch(cfg, openid, url, target);
+    const placeholder = /^(京东商品|淘宝商品|拼多多商品)/.test(w.name || '');
+    const hint = placeholder
+      ? '\n提示：暂未解析到商品标题，将在下次检查时重试。'
+      : '';
     return {
       text:
         `已添加监控 #${w.id}\n` +
@@ -123,7 +127,9 @@ async function doCreateWatch(
         `平台：${PLATFORM[w.platform] || w.platform}\n` +
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +
-        (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。'),
+        (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。') +
+        hint,
+      imageUrl: w.image_url,
     };
   } catch (e) {
     return { text: `添加失败：${e instanceof Error ? e.message : String(e)}` };

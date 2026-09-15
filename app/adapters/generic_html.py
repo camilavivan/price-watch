@@ -6,6 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urljoin
 
 import httpx
 
@@ -40,12 +41,37 @@ _PRICE_PATTERNS = [
 _TITLE_PATTERNS = [
     re.compile(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', re.I),
     re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:title["\']', re.I),
+    re.compile(r'<meta[^>]+itemprop=["\']name["\'][^>]+content=["\']([^"\']+)["\']', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+itemprop=["\']name["\']', re.I),
+    re.compile(r'<meta[^>]+name=["\']title["\'][^>]+content=["\']([^"\']+)["\']', re.I),
     re.compile(r"<title[^>]*>([^<]+)</title>", re.I),
 ]
 
 _IMAGE_PATTERNS = [
     re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', re.I),
     re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', re.I),
+    re.compile(r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)["\']', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+name=["\']twitter:image["\']', re.I),
+    re.compile(r'<meta[^>]+itemprop=["\']image["\'][^>]+content=["\']([^"\']+)["\']', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+itemprop=["\']image["\']', re.I),
+    # JSON fields commonly used by CN e-commerce pages
+    re.compile(
+        r"""["'](?:imagePath|imageUrl|imgurl|mainImage|image_url|imgUrl)["']\s*:\s*["']([^"']+)["']""",
+        re.I,
+    ),
+    # Common CDN image URLs embedded in HTML
+    re.compile(
+        r"""((?:https?:)?//(?:img\d*\.)?360buyimg\.com/[^\s"'<>\\]+)""",
+        re.I,
+    ),
+    re.compile(
+        r"""((?:https?:)?//(?:img\.)?alicdn\.com/[^\s"'<>\\]+)""",
+        re.I,
+    ),
+    re.compile(
+        r"""((?:https?:)?//(?:[^/\s"'<>]+\.)?(?:pddpic\.com|yangkeduo\.com)/[^\s"'<>\\]+)""",
+        re.I,
+    ),
 ]
 
 _OOS_MARKERS = ("无货", "售罄", "缺货", "下架", "已下架", "补货中", "out of stock", "sold out")
@@ -77,7 +103,58 @@ def _pick_price(candidates: list[float]) -> Optional[float]:
     return float(best)
 
 
-def extract_from_html(html: str) -> HtmlExtractResult:
+def normalize_image_url(url: Optional[str], *, base_url: Optional[str] = None) -> Optional[str]:
+    """Normalize protocol-relative / absolute image URLs; skip bare relatives without base."""
+    if not url:
+        return None
+    u = url.strip().strip("\\\"'")
+    if not u:
+        return None
+    if u.startswith("//"):
+        return "https:" + u
+    if u.startswith(("http://", "https://")):
+        return u
+    if u.startswith("/") and base_url:
+        try:
+            return urljoin(base_url, u)
+        except Exception:
+            return None
+    # Relative without base — leave as-is only if it looks like a path we cannot use
+    if u.startswith("/"):
+        return None
+    # Some JD imagePath values are like "jfs/t1/..." without host
+    if u.startswith("jfs/") or u.startswith("/jfs/"):
+        path = u.lstrip("/")
+        return f"https://img14.360buyimg.com/n1/{path}"
+    return None
+
+
+def extract_meta_only(html: str, *, base_url: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+    """Extract title + image_url only (price ignored)."""
+    if not html or len(html) < 40:
+        return None, None
+
+    title: Optional[str] = None
+    for pat in _TITLE_PATTERNS:
+        m = pat.search(html)
+        if m:
+            title = normalize_zh_text(m.group(1))
+            title = re.split(r"\s*[-_|｜]\s*", title)[0].strip()
+            if title:
+                break
+
+    image_url: Optional[str] = None
+    for pat in _IMAGE_PATTERNS:
+        m = pat.search(html)
+        if m:
+            image_url = normalize_image_url(m.group(1), base_url=base_url)
+            if image_url:
+                break
+
+    return title, image_url
+
+
+def extract_from_html(html: str, *, base_url: Optional[str] = None) -> HtmlExtractResult:
     if not html or len(html) < 40:
         return HtmlExtractResult(ok=False, error="页面内容过短，无法解析")
 
@@ -93,23 +170,7 @@ def extract_from_html(html: str) -> HtmlExtractResult:
                 continue
 
     price = _pick_price(prices)
-
-    title: Optional[str] = None
-    for pat in _TITLE_PATTERNS:
-        m = pat.search(html)
-        if m:
-            title = normalize_zh_text(m.group(1))
-            # Drop site suffix: "name - 京东" / "name_淘宝"
-            title = re.split(r"\s*[-_|｜]\s*", title)[0].strip()
-            if title:
-                break
-
-    image_url: Optional[str] = None
-    for pat in _IMAGE_PATTERNS:
-        m = pat.search(html)
-        if m:
-            image_url = m.group(1).strip()
-            break
+    title, image_url = extract_meta_only(html, base_url=base_url)
 
     in_stock: Optional[bool] = None
     if any(m in text for m in _OOS_MARKERS) or any(m in lower for m in ("out of stock", "sold out")):
@@ -150,4 +211,34 @@ async def fetch_and_extract(url: str, *, timeout: float = 15.0) -> HtmlExtractRe
     except Exception as e:
         logger.warning("HTML fetch failed url=%s: %s", url[:80], e)
         return HtmlExtractResult(ok=False, error=f"页面请求失败（{e}）")
-    return extract_from_html(html)
+    return extract_from_html(html, base_url=url)
+
+
+async def fetch_meta(url: str, *, timeout: float = 12.0) -> HtmlExtractResult:
+    """Fetch page focusing on title+image (price optional). Tolerant of anti-bot pages."""
+    try:
+        html = await fetch_html(url, timeout=timeout)
+    except Exception as e:
+        logger.warning("meta fetch failed url=%s: %s", url[:80], e)
+        return HtmlExtractResult(ok=False, error=f"页面请求失败（{e}）")
+
+    title, image_url = extract_meta_only(html, base_url=url)
+    # Still try price if present, but ok=True when we got title or image
+    full = extract_from_html(html, base_url=url)
+    if title or image_url:
+        return HtmlExtractResult(
+            ok=True,
+            price=full.price,
+            title=title or full.title,
+            image_url=image_url or full.image_url,
+            in_stock=full.in_stock,
+            raw_note="meta-only extract",
+        )
+    return HtmlExtractResult(
+        ok=False,
+        price=full.price,
+        title=full.title,
+        image_url=full.image_url,
+        in_stock=full.in_stock,
+        error=full.error or "未能解析标题/主图",
+    )

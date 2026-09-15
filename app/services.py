@@ -377,10 +377,39 @@ async def apply_price_update(
 
 async def check_watch(session: AsyncSession, product: Product) -> dict:
     """MarketEye-style engine: fetch → update → history → alerts → notify."""
+    from app.adapters.product_meta import enrich_title_image
+
     adapter = get_adapter(product.platform)
     fetch_url = product.canonical_url or product.url or ""
     result = await adapter.fetch(fetch_url, product.sku_id)
     product.last_check_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    title = getattr(result, "title", None)
+    image_url = getattr(result, "image_url", None)
+
+    # Fallback enrich when adapter still missing title/image
+    need_title = not title
+    need_image = not image_url
+    if need_title or need_image:
+        try:
+            t2, i2 = await enrich_title_image(
+                platform=product.platform,
+                url=fetch_url,
+                sku_id=product.sku_id,
+            )
+            title = title or t2
+            image_url = image_url or i2
+        except Exception as e:
+            logger.warning("enrich_title_image fallback failed id=%s: %s", product.id, e)
+
+    # Always refresh placeholder name / missing image when meta available
+    if title and (
+        not product.name
+        or product.name.startswith(("京东商品", "淘宝商品", "拼多多商品"))
+    ):
+        product.name = title
+    if image_url and not product.image_url:
+        product.image_url = image_url
 
     if not result.ok:
         product.needs_manual = True
@@ -395,13 +424,6 @@ async def check_watch(session: AsyncSession, product: Product) -> dict:
 
     product.needs_manual = False
     product.last_error = None
-    if result.title and (
-        not product.name
-        or product.name.startswith(("京东商品", "淘宝商品", "拼多多商品"))
-    ):
-        product.name = result.title
-    if getattr(result, "image_url", None) and not product.image_url:
-        product.image_url = result.image_url
     if result.raw_note:
         product.note = result.raw_note
 
