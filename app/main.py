@@ -156,6 +156,7 @@ async def product_create(
     sku_id: str = Form(""),
     owner_openid: str = Form(""),
     list_price: Optional[str] = Form(None),
+    tax_amount: str = Form("0"),
     coupon_amount: str = Form("0"),
     full_reduction: str = Form("0"),
     rebate_estimate: str = Form("0"),
@@ -175,10 +176,11 @@ async def product_create(
         # Prefer form platform but keep normalized sku/url when same family
         pass
     lp = float(list_price) if list_price not in (None, "") else None
+    tax = float(tax_amount or 0)
     coupon = float(coupon_amount or 0)
     fr = float(full_reduction or 0)
     rebate = float(rebate_estimate or 0)
-    landing = compute_landing(lp, coupon, fr)
+    landing = compute_landing(lp, coupon, fr, tax)
     product = Product(
         name=name.strip(),
         platform=platform,
@@ -187,6 +189,7 @@ async def product_create(
         sku_id=resolved_sku,
         owner_openid=(owner_openid or "").strip() or None,
         list_price=lp,
+        tax_amount=tax,
         coupon_amount=coupon,
         full_reduction=fr,
         rebate_estimate=rebate,
@@ -264,6 +267,7 @@ async def product_update(
     sku_id: str = Form(""),
     owner_openid: str = Form(""),
     list_price: Optional[str] = Form(None),
+    tax_amount: str = Form("0"),
     coupon_amount: str = Form("0"),
     full_reduction: str = Form("0"),
     rebate_estimate: str = Form("0"),
@@ -286,11 +290,15 @@ async def product_update(
     product.sku_id = (sku_id or "").strip() or (info.sku_id if info else None)
     product.owner_openid = (owner_openid or "").strip() or None
     product.list_price = float(list_price) if list_price not in (None, "") else None
+    product.tax_amount = float(tax_amount or 0)
     product.coupon_amount = float(coupon_amount or 0)
     product.full_reduction = float(full_reduction or 0)
     product.rebate_estimate = float(rebate_estimate or 0)
     product.landing_price = compute_landing(
-        product.list_price, product.coupon_amount, product.full_reduction
+        product.list_price,
+        product.coupon_amount,
+        product.full_reduction,
+        product.tax_amount,
     )
     product.target_price = float(target_price) if target_price not in (None, "") else None
     product.check_interval_minutes = (
@@ -343,6 +351,7 @@ async def product_update_price(
     product_id: int,
     db: AsyncSession = Depends(get_db),
     list_price: Optional[str] = Form(None),
+    tax_amount: Optional[str] = Form(None),
     coupon_amount: Optional[str] = Form(None),
     full_reduction: Optional[str] = Form(None),
     rebate_estimate: Optional[str] = Form(None),
@@ -362,6 +371,7 @@ async def product_update_price(
         db,
         product,
         list_price=_f(list_price),
+        tax_amount=_f(tax_amount),
         coupon_amount=_f(coupon_amount),
         full_reduction=_f(full_reduction),
         rebate_estimate=_f(rebate_estimate),

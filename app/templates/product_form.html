@@ -43,14 +43,22 @@
     </div>
     <div class="form-row">
       <div>
+        <label for="tax_amount">税费（元，海淘/全球购）</label>
+        <input type="number" step="0.01" id="tax_amount" name="tax_amount" value="{{ product.tax_amount if product else 0 }}" />
+        <p class="hint">进口税/预估税费；含税价已含税时填 0</p>
+      </div>
+      <div>
         <label for="coupon_amount">券面额（元）</label>
         <input type="number" step="0.01" id="coupon_amount" name="coupon_amount" value="{{ product.coupon_amount if product else 0 }}" />
         <p class="hint">自动解析失败时手动填写</p>
       </div>
+    </div>
+    <div class="form-row">
       <div>
         <label for="full_reduction">满减估算（元）</label>
         <input type="number" step="0.01" id="full_reduction" name="full_reduction" value="{{ product.full_reduction if product else 0 }}" />
       </div>
+      <div></div>
     </div>
     <div class="form-row">
       <div>
@@ -70,7 +78,7 @@
       <input type="checkbox" name="enabled" value="1" {% if not product or product.enabled %}checked{% endif %} />
       启用监控
     </label>
-    <p class="hint">到手价 = 标价 − 券面额 − 满减估算（返利单独展示，不扣减）</p>
+    <p class="hint">到手价 = 标价 + 税费 − 券面额 − 满减估算（返利单独展示，不扣减；含税价已含税则税费填 0）</p>
     <div class="row">
       <button class="btn" type="submit">保存</button>
       <a class="btn secondary" href="{% if product %}/products/{{ product.id }}{% else %}/{% endif %}">取消</a>

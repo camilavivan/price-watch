@@ -18,6 +18,7 @@ export type Watch = {
   landing_price: number | null;
   target_price: number | null;
   list_price: number | null;
+  tax_amount: number;
   coupon_amount: number;
   full_reduction: number;
   rebate_estimate: number;
@@ -102,6 +103,7 @@ export async function getWatch(cfg: BotConfig, openid: string, id: number): Prom
 export type HistoryPoint = {
   landing_price: number;
   list_price: number | null;
+  tax_amount: number;
   coupon_amount: number;
   full_reduction: number;
   source: string;

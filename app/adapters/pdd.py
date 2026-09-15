@@ -35,6 +35,7 @@ class PDDAdapter:
             return FetchResult(
                 ok=True,
                 list_price=result.price,
+                tax_amount=result.tax_amount,
                 title=result.title,
                 image_url=result.image_url,
                 needs_manual=False,

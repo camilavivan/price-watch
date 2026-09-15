@@ -193,11 +193,16 @@ async function doCreateWatch(
     const hint = placeholder
       ? '\n提示：暂未解析到商品标题，将在下次检查时重试。'
       : '';
+    const taxLine =
+      w.tax_amount != null && Number(w.tax_amount) > 0
+        ? `税费：${fmtPrice(w.tax_amount)}\n`
+        : '';
     return {
       text:
         `已添加监控 #${w.id}\n` +
         `${w.name}\n` +
         `平台：${PLATFORM[w.platform] || w.platform}\n` +
+        taxLine +
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +
         (w.needs_manual ? '提示：该平台可能需在调试页手动更新价格。' : '已尝试拉取价格。') +
@@ -286,10 +291,15 @@ export async function handleCommand(
       const w = await getWatch(cfg, openid, id);
       const plat = PLATFORM[w.platform] || w.platform;
       const statsBlock = fmtStats(w.history_stats);
+      const taxLine =
+        w.tax_amount != null && Number(w.tax_amount) > 0
+          ? `税费：${fmtPrice(w.tax_amount)}\n`
+          : '';
       const body =
         `#${w.id} ${w.name}\n` +
         `平台：${plat}\n` +
         `标价：${fmtPrice(w.list_price)}\n` +
+        taxLine +
         `券：${fmtPrice(w.coupon_amount)} · 满减：${fmtPrice(w.full_reduction)}\n` +
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +

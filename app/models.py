@@ -33,6 +33,7 @@ class Product(Base):
 
     # Price components (yuan)
     list_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tax_amount: Mapped[float] = mapped_column(Float, default=0.0)
     coupon_amount: Mapped[float] = mapped_column(Float, default=0.0)
     full_reduction: Mapped[float] = mapped_column(Float, default=0.0)
     rebate_estimate: Mapped[float] = mapped_column(Float, default=0.0)
@@ -61,10 +62,15 @@ class Product(Base):
     )
 
     def compute_landing(self) -> Optional[float]:
-        """到手价 = 标价 - 券 - 满减（不含返利）."""
+        """到手价 = 标价 + 税费 - 券 - 满减（不含返利；税费默认 0）."""
         if self.list_price is None:
             return self.landing_price
-        v = self.list_price - (self.coupon_amount or 0) - (self.full_reduction or 0)
+        v = (
+            self.list_price
+            + (self.tax_amount or 0)
+            - (self.coupon_amount or 0)
+            - (self.full_reduction or 0)
+        )
         return round(max(v, 0), 2)
 
 
@@ -74,6 +80,7 @@ class PriceHistory(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     product_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     list_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tax_amount: Mapped[float] = mapped_column(Float, default=0.0)
     coupon_amount: Mapped[float] = mapped_column(Float, default=0.0)
     full_reduction: Mapped[float] = mapped_column(Float, default=0.0)
     rebate_estimate: Mapped[float] = mapped_column(Float, default=0.0)

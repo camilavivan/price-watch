@@ -36,10 +36,18 @@ def compute_landing(
     list_price: Optional[float],
     coupon: float = 0.0,
     full_reduction: float = 0.0,
+    tax_amount: float = 0.0,
 ) -> Optional[float]:
+    """到手价 = 标价 + 税费 - 券 - 满减（floor at 0；返利不计）."""
     if list_price is None:
         return None
-    return round(max(list_price - (coupon or 0) - (full_reduction or 0), 0), 2)
+    v = (
+        list_price
+        + (tax_amount or 0)
+        - (coupon or 0)
+        - (full_reduction or 0)
+    )
+    return round(max(v, 0), 2)
 
 
 def sparkline(values: list[float], width: int = 24) -> str:
@@ -144,6 +152,9 @@ def format_alert(
         f"到手价：{old_s} → ¥{new_landing:.2f}",
         f"原因：{reason}",
     ]
+    tax = float(product.tax_amount or 0)
+    if tax > 0:
+        lines.insert(3, f"税费：¥{tax:.2f}")
     if hist_stats and hist_stats.count > 0:
         lo = f"¥{hist_stats.lowest:.2f}" if hist_stats.lowest is not None else "—"
         hi = f"¥{hist_stats.highest:.2f}" if hist_stats.highest is not None else "—"
@@ -235,6 +246,7 @@ async def record_history(
         PriceHistory(
             product_id=product.id,
             list_price=product.list_price,
+            tax_amount=product.tax_amount or 0,
             coupon_amount=product.coupon_amount or 0,
             full_reduction=product.full_reduction or 0,
             rebate_estimate=product.rebate_estimate or 0,
@@ -250,6 +262,7 @@ async def apply_price_update(
     product: Product,
     *,
     list_price: Optional[float] = None,
+    tax_amount: Optional[float] = None,
     coupon_amount: Optional[float] = None,
     full_reduction: Optional[float] = None,
     rebate_estimate: Optional[float] = None,
@@ -264,6 +277,8 @@ async def apply_price_update(
 
     if list_price is not None:
         product.list_price = list_price
+    if tax_amount is not None:
+        product.tax_amount = tax_amount
     if coupon_amount is not None:
         product.coupon_amount = coupon_amount
     if full_reduction is not None:
@@ -278,6 +293,7 @@ async def apply_price_update(
             product.list_price,
             product.coupon_amount or 0,
             product.full_reduction or 0,
+            product.tax_amount or 0,
         )
 
     product.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -431,6 +447,7 @@ async def check_watch(session: AsyncSession, product: Product) -> dict:
         session,
         product,
         list_price=result.list_price,
+        tax_amount=result.tax_amount,
         coupon_amount=result.coupon_amount,
         full_reduction=result.full_reduction,
         source="check",

@@ -10,6 +10,7 @@ from typing import Optional, Protocol
 class FetchResult:
     ok: bool
     list_price: Optional[float] = None
+    tax_amount: Optional[float] = None
     coupon_amount: Optional[float] = None
     full_reduction: Optional[float] = None
     title: Optional[str] = None

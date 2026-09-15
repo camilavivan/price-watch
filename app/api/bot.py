@@ -53,6 +53,7 @@ def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, An
         "sku_id": p.sku_id,
         "owner_openid": p.owner_openid,
         "list_price": p.list_price,
+        "tax_amount": p.tax_amount or 0,
         "coupon_amount": p.coupon_amount,
         "full_reduction": p.full_reduction,
         "rebate_estimate": p.rebate_estimate,
@@ -269,6 +270,7 @@ async def watch_history(
         {
             "landing_price": h.landing_price,
             "list_price": h.list_price,
+            "tax_amount": h.tax_amount or 0,
             "coupon_amount": h.coupon_amount,
             "full_reduction": h.full_reduction,
             "source": h.source,

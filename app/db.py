@@ -53,9 +53,22 @@ async def _migrate_sqlite(conn) -> None:
         alters.append("ALTER TABLE products ADD COLUMN image_url TEXT")
     if "canonical_url" not in cols:
         alters.append("ALTER TABLE products ADD COLUMN canonical_url TEXT")
+    if "tax_amount" not in cols:
+        alters.append("ALTER TABLE products ADD COLUMN tax_amount FLOAT DEFAULT 0.0")
     for stmt in alters:
         logger.info("SQLite migrate: %s", stmt)
         await conn.execute(text(stmt))
+
+    # price_history.tax_amount (additive)
+    try:
+        result_h = await conn.execute(text("PRAGMA table_info(price_history)"))
+        hist_cols = {row[1] for row in result_h.fetchall()}
+        if hist_cols and "tax_amount" not in hist_cols:
+            stmt = "ALTER TABLE price_history ADD COLUMN tax_amount FLOAT DEFAULT 0.0"
+            logger.info("SQLite migrate: %s", stmt)
+            await conn.execute(text(stmt))
+    except Exception as e:
+        logger.warning("price_history tax_amount migrate skipped: %s", e)
 
     # Backfill canonical_url from url where empty
     try:

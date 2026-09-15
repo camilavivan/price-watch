@@ -30,12 +30,40 @@ DEFAULT_HEADERS = {
 _PRICE_PATTERNS = [
     re.compile(r"[￥¥]\s*([0-9]{1,7}(?:\.[0-9]{1,2})?)", re.I),
     re.compile(
-        r"(?:price|pPrice|actualPrice|salePrice|realPrice|currentPrice|oprice)"
-        r"""["']?\s*[:=]\s*["']?([0-9]{1,7}(?:\.[0-9]{1,2})?)""",
+        r"""["'](?:price|pPrice|actualPrice|salePrice|realPrice|currentPrice|oprice|"""
+        r"""jdPrice|plusPrice|originPrice|op)["']"""
+        r"""\s*[:=]\s*["']?([0-9]{1,7}(?:\.[0-9]{1,2})?)""",
         re.I,
     ),
     re.compile(r"\$\s*([0-9]{1,7}(?:\.[0-9]{1,2})?)"),
     re.compile(r"([0-9]{1,7}\.[0-9]{2})\s*元"),
+]
+
+# Tax amounts near Chinese markers or JSON keys (not used as main retail price)
+_TAX_PATTERNS = [
+    re.compile(
+        r"(?:预估税费|进口税|跨境税|税费|税额)\s*[:：]?\s*[￥¥]?\s*"
+        r"([0-9]{1,7}(?:\.[0-9]{1,2})?)",
+        re.I,
+    ),
+    re.compile(
+        r"""["'](?:taxFee|taxPrice|taxation|importTax|taxAmount|tax)["']"""
+        r"""\s*[:=]\s*["']?([0-9]{1,7}(?:\.[0-9]{1,2})?)""",
+        re.I,
+    ),
+]
+
+_ALLIN_PATTERNS = [
+    re.compile(
+        r"(?:含税价|预估合计|预估到手|含税合计)\s*[:：]?\s*[￥¥]?\s*"
+        r"([0-9]{1,7}(?:\.[0-9]{1,2})?)",
+        re.I,
+    ),
+    re.compile(
+        r"""["'](?:plusTaxPrice|totalPrice|taxInclusivePrice|includeTaxPrice)["']"""
+        r"""\s*[:=]\s*["']?([0-9]{1,7}(?:\.[0-9]{1,2})?)""",
+        re.I,
+    ),
 ]
 
 _TITLE_PATTERNS = [
@@ -82,6 +110,7 @@ _IN_STOCK_MARKERS = ("有货", "现货", "立即购买", "加入购物车", "in 
 class HtmlExtractResult:
     ok: bool
     price: Optional[float] = None
+    tax_amount: Optional[float] = None
     title: Optional[str] = None
     image_url: Optional[str] = None
     in_stock: Optional[bool] = None
@@ -89,13 +118,31 @@ class HtmlExtractResult:
     raw_note: Optional[str] = None
 
 
-def _pick_price(candidates: list[float]) -> Optional[float]:
-    """Pick a plausible retail price (ignore tiny / huge outliers)."""
-    plausible = [p for p in candidates if 0.5 <= p <= 999999]
+def _pick_price(candidates: list[float], *, exclude: Optional[set[float]] = None) -> Optional[float]:
+    """Pick a plausible retail price (ignore tiny / huge outliers; skip known tax)."""
+    exclude = exclude or set()
+    plausible = [
+        p for p in candidates
+        if 0.5 <= p <= 999999 and round(p, 2) not in exclude
+    ]
     if not plausible:
         return None
-    # Prefer mid-low among common list/sale duplicates: take the most frequent,
-    # else the median-ish lower half first value.
+    # Prefer mid-range among duplicates: most frequent, else median of sorted.
+    from collections import Counter
+
+    counts = Counter(round(p, 2) for p in plausible)
+    best, freq = counts.most_common(1)[0]
+    if freq == 1 and len(plausible) >= 3:
+        ordered = sorted(set(round(p, 2) for p in plausible))
+        best = ordered[len(ordered) // 2]
+    return float(best)
+
+
+def _pick_tax(candidates: list[float]) -> Optional[float]:
+    """Pick a tax amount; typically smaller than retail but can be large for luxury."""
+    plausible = [p for p in candidates if 0 < p <= 999999]
+    if not plausible:
+        return None
     from collections import Counter
 
     counts = Counter(round(p, 2) for p in plausible)
@@ -161,6 +208,18 @@ def extract_from_html(html: str, *, base_url: Optional[str] = None) -> HtmlExtra
     text = normalize_zh_text(html)
     lower = text.lower()
 
+    taxes: list[float] = []
+    for pat in _TAX_PATTERNS:
+        for m in pat.finditer(html):
+            try:
+                taxes.append(float(m.group(1)))
+            except ValueError:
+                continue
+    tax_amount = _pick_tax(taxes)
+    tax_exclude: set[float] = set()
+    if tax_amount is not None:
+        tax_exclude.add(round(tax_amount, 2))
+
     prices: list[float] = []
     for pat in _PRICE_PATTERNS:
         for m in pat.finditer(html):
@@ -169,7 +228,29 @@ def extract_from_html(html: str, *, base_url: Optional[str] = None) -> HtmlExtra
             except ValueError:
                 continue
 
-    price = _pick_price(prices)
+    allins: list[float] = []
+    for pat in _ALLIN_PATTERNS:
+        for m in pat.finditer(html):
+            try:
+                allins.append(float(m.group(1)))
+            except ValueError:
+                continue
+
+    # Prefer mid-range retail; never pick tiny tax as the main price
+    price = _pick_price(prices, exclude=tax_exclude)
+    if price is None and allins:
+        # All-in tax-inclusive total as list price; tax left 0 to avoid double count
+        price = _pick_price(allins)
+        if price is not None:
+            tax_amount = 0.0
+
+    # If price looks like a tax (very small vs other candidates), try again without it
+    if price is not None and tax_amount is not None and price <= tax_amount and price < 50:
+        price = _pick_price(
+            [p for p in prices if round(p, 2) != round(price, 2)],
+            exclude=tax_exclude,
+        ) or _pick_price(allins)
+
     title, image_url = extract_meta_only(html, base_url=base_url)
 
     in_stock: Optional[bool] = None
@@ -181,19 +262,25 @@ def extract_from_html(html: str, *, base_url: Optional[str] = None) -> HtmlExtra
     if price is None:
         return HtmlExtractResult(
             ok=False,
+            tax_amount=tax_amount,
             title=title,
             image_url=image_url,
             in_stock=in_stock,
             error="未能从 HTML 中解析到价格",
         )
 
+    note = "generic HTML extract"
+    if tax_amount:
+        note += f" (税费 ¥{tax_amount:.2f})"
+
     return HtmlExtractResult(
         ok=True,
         price=price,
+        tax_amount=tax_amount,
         title=title,
         image_url=image_url,
         in_stock=in_stock,
-        raw_note="generic HTML extract",
+        raw_note=note,
     )
 
 
@@ -229,6 +316,7 @@ async def fetch_meta(url: str, *, timeout: float = 12.0) -> HtmlExtractResult:
         return HtmlExtractResult(
             ok=True,
             price=full.price,
+            tax_amount=full.tax_amount,
             title=title or full.title,
             image_url=image_url or full.image_url,
             in_stock=full.in_stock,
@@ -237,6 +325,7 @@ async def fetch_meta(url: str, *, timeout: float = 12.0) -> HtmlExtractResult:
     return HtmlExtractResult(
         ok=False,
         price=full.price,
+        tax_amount=full.tax_amount,
         title=full.title,
         image_url=full.image_url,
         in_stock=full.in_stock,
