@@ -53,10 +53,30 @@ RUN pip install --upgrade pip \
     -r requirements.txt
 
 # Playwright Chromium for optional JD browser fetch (~+300MB+).
+# Avoid `playwright install --with-deps` on Debian Trixie/slim (missing
+# ttf-unifont / ttf-ubuntu-font-family). Install Chromium + distro libs.
 # Enable with fetch.playwright.enabled: true after Web「浏览器登录」or
 #   python -m app.browser_login jd
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-RUN playwright install --with-deps chromium
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
+RUN set -eux; \
+  apt-get update; \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libnss3 libnspr4 libdrm2 libgbm1 libxkbcommon0 \
+    libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    libpango-1.0-0 libcairo2 libdbus-1-3 libglib2.0-0 \
+    libx11-6 libx11-xcb1 libxcb1 libxext6 \
+    fonts-liberation fonts-unifont fonts-noto-color-emoji \
+    fonts-noto-cjk \
+    || true; \
+  # Bookworm vs Trixie package name drift (*t64)
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libcups2t64 libasound2t64 libgtk-3-0t64 \
+    || DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libasound2 libgtk-3-0 \
+    || true; \
+  rm -rf /var/lib/apt/lists/*; \
+  playwright install chromium
 
 # Clear build-time proxy so runtime requests are not forced through it
 ENV HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy=
