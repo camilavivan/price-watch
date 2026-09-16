@@ -455,12 +455,40 @@ async def check_watch(session: AsyncSession, product: Product) -> dict:
         hint_price = None
         # Soft current-price hint from 慢慢买 when JD/TB auto fetch fails
         try:
-            from app.history_external import latest_external_price, soft_price_hint_enabled
+            from app.history_external import (
+                fetch_external_history,
+                latest_external_price,
+                soft_price_hint_enabled,
+            )
+            from app.price_sanity import (
+                is_bogus_vs_history,
+                is_plausible_retail,
+                min_plausible_price,
+            )
 
             if soft_price_hint_enabled(product.platform or ""):
                 hint_url = fetch_url or product.canonical_url or product.url or ""
                 hint_price = await latest_external_price(hint_url) if hint_url else None
-                if hint_price is not None and hint_price > 0:
+                cfg = get_config().fetch
+                min_p = min_plausible_price(getattr(cfg, "minPlausiblePrice", 10))
+                hist_frac = float(getattr(cfg, "historyBogusFraction", 0.2) or 0.2)
+                hist_low = None
+                if hint_url:
+                    try:
+                        series = await fetch_external_history(hint_url)
+                        if series and series.lowest is not None:
+                            hist_low = float(series.lowest)
+                    except Exception:
+                        hist_low = None
+                ok_hint = (
+                    hint_price is not None
+                    and hint_price > 0
+                    and is_plausible_retail(float(hint_price), min_plausible=min_p)
+                    and not is_bogus_vs_history(
+                        float(hint_price), hist_low, fraction=hist_frac
+                    )
+                )
+                if ok_hint:
                     product.list_price = float(hint_price)
                     product.tax_amount = 0.0
                     product.landing_price = float(hint_price)
@@ -472,6 +500,12 @@ async def check_watch(session: AsyncSession, product: Product) -> dict:
                     hint_applied = True
                     logger.info(
                         "manmanbuy soft price hint id=%s price=%s",
+                        product.id,
+                        hint_price,
+                    )
+                elif hint_price is not None:
+                    logger.info(
+                        "manmanbuy soft hint skipped id=%s price=%s (sanity)",
                         product.id,
                         hint_price,
                     )

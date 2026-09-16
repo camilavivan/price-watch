@@ -34,6 +34,10 @@ class FetchConfig(BaseModel):
     rateLimitSeconds: float = 1.5
     # Ignore drop alerts when relative change is within this noise band (MarketEye-inspired)
     priceNoisePercent: float = 0.5
+    # Reject manual/scrape/soft-hint prices below this unless labeled or force
+    minPlausiblePrice: float = 10.0
+    # Reject candidate if < history_lowest * this fraction (manmanbuy / local)
+    historyBogusFraction: float = 0.2
     playwright: PlaywrightConfig = Field(default_factory=PlaywrightConfig)
 
 

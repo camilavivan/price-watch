@@ -317,9 +317,32 @@ def parse_jd_price_tax(html: str) -> dict[str, Optional[float]]:
       2) JSON price keys + tax keys
       3) All-in 「含税价 / 预估合计 / plusTaxPrice」 as list_price with tax=0
          (documented: already tax-inclusive → avoid double-counting)
+
+    Login walls (登录查看价格 / ¥???) → no price.
+    Prices below fetch.minPlausiblePrice are rejected.
     """
     if not html:
         return {"list_price": None, "tax_amount": None, "note": None}
+
+    try:
+        from app.price_sanity import is_login_wall_text, min_plausible_price
+
+        if is_login_wall_text(html):
+            return {
+                "list_price": None,
+                "tax_amount": None,
+                "note": "登录查看价格/登录墙，无真实价格",
+            }
+        try:
+            from app.config import get_config
+
+            _min_p = min_plausible_price(
+                getattr(get_config().fetch, "minPlausiblePrice", 10)
+            )
+        except Exception:
+            _min_p = 10.0
+    except Exception:
+        _min_p = 10.0
 
     collected: dict[str, list[float]] = {}
     for blob in _extract_json_blobs(html):
@@ -377,6 +400,16 @@ def parse_jd_price_tax(html: str) -> dict[str, Optional[float]]:
     # Tiny values that look like tax should not become list_price
     if price is not None and tax is not None and price < tax and price < 20:
         price = None
+
+    # Reject below minPlausible (login junk / mis-parsed specs)
+    try:
+        min_p = _min_p  # set above when login-wall import succeeded
+    except NameError:
+        min_p = 10.0
+    if price is not None and price < min_p:
+        price = None
+    if allin is not None and allin < min_p:
+        allin = None
 
     note: Optional[str] = None
     if price is not None and tax is not None:

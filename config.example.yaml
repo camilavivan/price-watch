@@ -25,6 +25,8 @@ scheduler:
 fetch:
   rateLimitSeconds: 1.5
   priceNoisePercent: 0.5   # 小于该幅度的波动不触发「较上次下降」类告警
+  minPlausiblePrice: 10    # 手动/抓取/软提示价低于此则拒绝（除非 force 或带 ￥/元 标注）
+  historyBogusFraction: 0.2  # 候选价 < 历史最低 × 该比例 → 视为误识别
   # 可选：Playwright 浏览器取价（京东风控/SPA；需镜像安装 chromium，体积显著增大）
   playwright:
     enabled: false

@@ -6,6 +6,31 @@ import json
 import re
 from typing import Any, Optional
 
+from app.price_sanity import is_login_wall_text, min_plausible_price
+
+
+def _min_p() -> float:
+    try:
+        from app.config import get_config
+
+        return min_plausible_price(getattr(get_config().fetch, "minPlausiblePrice", 10))
+    except Exception:
+        return 10.0
+
+
+def _accept_price(val: Optional[float]) -> Optional[float]:
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return None
+    if f < _min_p():
+        return None
+    return f
+
 
 def extract_price_from_ware_json(payload: Any) -> dict[str, Optional[float | str]]:
     """
@@ -53,6 +78,9 @@ def extract_price_from_ware_json(payload: Any) -> dict[str, Optional[float | str
         (data, "plusTaxPrice"),
     )
 
+    list_price = _accept_price(list_price)
+    allin = _accept_price(allin)
+
     if list_price is not None and list_price > 0:
         out["list_price"] = list_price
         out["tax_amount"] = float(tax or 0)
@@ -69,8 +97,13 @@ def extract_price_from_ware_json(payload: Any) -> dict[str, Optional[float | str
 
 
 def extract_price_from_dom_text(text: str) -> dict[str, Optional[float]]:
-    """Best-effort from visible page text (商品价 / 税费 / 到手)."""
+    """Best-effort from visible page text (商品价 / 税费 / 到手).
+
+    Login walls (登录查看价格 / ¥???) → no price.
+    """
     if not text:
+        return {}
+    if is_login_wall_text(text):
         return {}
     out: dict[str, Optional[float]] = {}
     m = re.search(
@@ -79,7 +112,9 @@ def extract_price_from_dom_text(text: str) -> dict[str, Optional[float]]:
     )
     tax_m = re.search(r"(?:预估税费|税费|进口税)[：:\s]*[￥¥]?\s*(\d+(?:\.\d+)?)", text)
     if m:
-        out["list_price"] = float(m.group(1))
+        lp = _accept_price(float(m.group(1)))
+        if lp is not None:
+            out["list_price"] = lp
     if tax_m:
         out["tax_amount"] = float(tax_m.group(1))
     return out
@@ -88,13 +123,19 @@ def extract_price_from_dom_text(text: str) -> dict[str, Optional[float]]:
 def merge_playwright_hits(
     *parts: dict,
 ) -> dict[str, Optional[float | str]]:
-    """Prefer first non-empty list_price; fill tax/title from any."""
+    """Prefer first non-empty list_price; fill tax/title from any.
+
+    Drops login_wall / below-minPlausible junk.
+    """
     merged: dict[str, Optional[float | str]] = {}
     for p in parts:
         if not p:
             continue
-        if merged.get("list_price") is None and p.get("list_price") is not None:
-            merged["list_price"] = p["list_price"]
+        lp = p.get("list_price")
+        if lp is not None:
+            lp = _accept_price(float(lp) if lp is not None else None)
+        if merged.get("list_price") is None and lp is not None:
+            merged["list_price"] = lp
             if p.get("tax_amount") is not None:
                 merged["tax_amount"] = p.get("tax_amount")
         if merged.get("tax_amount") is None and p.get("tax_amount") is not None:

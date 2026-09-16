@@ -166,6 +166,13 @@ function hasWatchKeyword(text: string): boolean {
   return /监控|盯价|加监控/.test(text);
 }
 
+/** Product / quantity units — digits glued to these are specs, not prices (e.g. 2段). */
+const PRODUCT_UNIT_RE =
+  /^(?:段|罐|盒|袋|瓶|件|岁|月|抽|片|斤|两|升|克|个|只|双|条|包|箱|桶|支|台|部|辆|kg|g|ml|L|人份)/iu;
+
+/** Default min plausible retail when number is unlabeled (configurable mirror of fetch.minPlausiblePrice). */
+export const DEFAULT_MIN_PLAUSIBLE_PRICE = 10;
+
 export type CreatePrices = {
   /** Explicit current landing when two numbers or labeled */
   current?: number;
@@ -176,40 +183,136 @@ export type CreatePrices = {
    * auto landing present → target; else → current.
    */
   trailing?: number;
+  /** Unlabeled / unit-glued number we refused (for QQ reply). */
+  rejected?: number;
 };
+
+function hasDecimalPlaces(n: number): boolean {
+  return Math.abs(n - Math.round(n)) > 1e-9;
+}
+
+/**
+ * Accept a candidate amount from share / 监控 text.
+ * (a) currency / price keyword labeled → accept if > 0
+ * (b) standalone after URL, not followed by product unit, and
+ *     ≥ minPlausible OR has decimal places
+ */
+export function isAcceptableCreatePrice(
+  n: number,
+  opts: { labeled?: boolean; followedByUnit?: boolean; minPlausible?: number } = {},
+): boolean {
+  if (!Number.isFinite(n) || n < 0) return false;
+  if (opts.followedByUnit) return false;
+  const minP = opts.minPlausible ?? DEFAULT_MIN_PLAUSIBLE_PRICE;
+  if (opts.labeled) return n > 0;
+  if (hasDecimalPlaces(n)) return n > 0;
+  return n >= minP;
+}
+
+type ScannedNum = { value: number; labeled: boolean; followedByUnit: boolean };
+
+/**
+ * Scan text for price-like numbers; skip unit-glued specs (奶粉2段).
+ * Prefer ￥/¥/元 and 到手/现价/价格/填价 labeled amounts.
+ */
+function scanPriceNumbers(text: string, minPlausible: number): {
+  accepted: number[];
+  rejected: number[];
+} {
+  const accepted: number[] = [];
+  const rejected: number[] = [];
+  const seen = new Set<string>();
+
+  const push = (item: ScannedNum) => {
+    const key = `${item.value}|${item.labeled}|${item.followedByUnit}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    if (isAcceptableCreatePrice(item.value, item)) {
+      accepted.push(item.value);
+    } else if (item.followedByUnit || (!item.labeled && item.value < minPlausible)) {
+      rejected.push(item.value);
+    }
+  };
+
+  // Labeled: 到手价/现价/价格/填价 / ￥¥ / …元
+  const labeledRe =
+    /(?:到手价?|现价|价格|填价|售价|促销价)\s*[：:=\s]*[￥¥]?\s*(\d+(?:\.\d+)?)|(?:[￥¥]\s*(\d+(?:\.\d+)?))|(\d+(?:\.\d+)?)\s*元/g;
+  for (const m of text.matchAll(labeledRe)) {
+    const raw = m[1] ?? m[2] ?? m[3];
+    const n = Number(raw);
+    if (Number.isFinite(n)) push({ value: n, labeled: true, followedByUnit: false });
+  }
+
+  // Bare numbers: reject if immediately followed by product unit (2段 / 900g)
+  const bareRe = /(\d+(?:\.\d+)?)/g;
+  for (const m of text.matchAll(bareRe)) {
+    const n = Number(m[1]);
+    if (!Number.isFinite(n)) continue;
+    const after = text.slice(m.index! + m[0].length);
+    const before = text.slice(Math.max(0, m.index! - 1), m.index!);
+    if (before === '.' || /^\.\d/.test(after)) continue;
+    const rest = after.replace(/^\s*/, '');
+    const gluedOrUnit = PRODUCT_UNIT_RE.test(rest);
+    push({
+      value: n,
+      labeled: false,
+      followedByUnit: gluedOrUnit,
+    });
+  }
+
+  return { accepted, rejected };
+}
 
 /**
  * Parse current / target / trailing prices from create / share-paste text.
  * - Two numbers after URL → current then target
  * - One number → trailing (ambiguous until auto-fetch result)
  * - 「目标价 xx」 alone → target
+ * - Digits glued to 段/罐/盒/… are NOT prices (e.g. 奶粉2段)
  */
-export function extractCreatePrices(text: string, url?: string | null): CreatePrices {
+export function extractCreatePrices(
+  text: string,
+  url?: string | null,
+  opts?: { minPlausible?: number },
+): CreatePrices {
   const out: CreatePrices = {};
+  const minPlausible = opts?.minPlausible ?? DEFAULT_MIN_PLAUSIBLE_PRICE;
   let targetKw: number | undefined;
   const kw = text.match(/目标价?\s*[：:=\s]*(\d+(?:\.\d+)?)/);
   if (kw) targetKw = Number(kw[1]);
 
   const nums: number[] = [];
+  let rejected: number | undefined;
+
   if (url) {
     const idx = text.indexOf(url);
     if (idx >= 0) {
-      const after = text.slice(idx + url.length);
-      // Collect up to 2 plain numbers (ignore 目标价 keyword number via separate path)
-      const stripped = after.replace(/目标价?\s*[：:=\s]*\d+(?:\.\d+)?/g, ' ');
-      for (const m of stripped.matchAll(/(\d+(?:\.\d+)?)\s*元?/g)) {
-        const n = Number(m[1]);
-        if (Number.isFinite(n) && n >= 0) nums.push(n);
+      let after = text.slice(idx + url.length);
+      // Ignore 目标价 keyword number via separate path
+      after = after.replace(/目标价?\s*[：:=\s]*\d+(?:\.\d+)?/g, ' ');
+      const scanned = scanPriceNumbers(after, minPlausible);
+      for (const n of scanned.accepted) {
+        if (!nums.includes(n)) nums.push(n);
         if (nums.length >= 2) break;
       }
+      if (scanned.rejected.length) rejected = scanned.rejected[0];
     }
   }
   if (!nums.length) {
     const m = text.match(
       /(?:监控|盯价|加监控)\s+\S+(?:\s+(\d+(?:\.\d+)?))?(?:\s+(\d+(?:\.\d+)?))?\s*$/,
     );
-    if (m?.[1]) nums.push(Number(m[1]));
-    if (m?.[2]) nums.push(Number(m[2]));
+    const tryPush = (raw: string | undefined) => {
+      if (!raw) return;
+      const n = Number(raw);
+      if (!isAcceptableCreatePrice(n, { minPlausible })) {
+        if (n < minPlausible) rejected = rejected ?? n;
+        return;
+      }
+      nums.push(n);
+    };
+    tryPush(m?.[1]);
+    tryPush(m?.[2]);
   }
 
   if (nums.length >= 2) {
@@ -226,6 +329,9 @@ export function extractCreatePrices(text: string, url?: string | null): CreatePr
     }
   } else if (targetKw != null) {
     out.target = targetKw;
+  }
+  if (rejected != null && out.current == null && out.trailing == null) {
+    out.rejected = rejected;
   }
   return out;
 }
@@ -283,6 +389,15 @@ function createReplyNoLanding(w: {
   );
 }
 
+function rejectedPriceHint(watchId: number, rejected: number | undefined | null): string {
+  if (rejected == null || !Number.isFinite(rejected)) return '';
+  const disp =
+    Math.abs(rejected - Math.round(rejected)) < 1e-9
+      ? String(Math.round(rejected))
+      : String(rejected);
+  return `\n未采用「${disp}」疑似规格（如2段），请发 \`填价 ${watchId} 真实到手价\``;
+}
+
 async function doCreateWatch(
   cfg: BotConfig,
   openid: string,
@@ -309,6 +424,13 @@ async function doCreateWatch(
         ? `税费：${fmtPrice(w.tax_amount)}\n`
         : '';
 
+    const rejectedVal =
+      w.rejected_manual_price ?? prices.rejected ?? null;
+    const rejectLine =
+      w.reject_message
+        ? `\n${w.reject_message.replace(/请发真实到手价/, `请发 \`填价 ${w.id} 真实到手价\``)}`
+        : rejectedPriceHint(w.id, rejectedVal);
+
     let priceBlock: string;
     if (w.landing_price != null) {
       const usedManual = Boolean(w.used_manual_current);
@@ -324,7 +446,8 @@ async function doCreateWatch(
     } else {
       priceBlock =
         createReplyNoLanding(w) +
-        `\n目标价：${fmtPrice(w.target_price)}`;
+        `\n目标价：${fmtPrice(w.target_price)}` +
+        rejectLine;
     }
 
     return {
@@ -334,6 +457,7 @@ async function doCreateWatch(
         `平台：${PLATFORM[w.platform] || w.platform}\n` +
         taxLine +
         priceBlock +
+        (w.landing_price != null ? rejectLine : '') +
         hint,
       imageUrl: w.image_url,
     };

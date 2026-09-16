@@ -173,6 +173,16 @@ async def fetch_jd_with_playwright(
                     if _looks_risk(html):
                         logger.info("playwright still risk page at %s", urlparse(url).netloc)
                         continue
+                    try:
+                        from app.price_sanity import is_login_wall_text
+
+                        if is_login_wall_text(html):
+                            logger.info(
+                                "playwright login wall at %s", urlparse(url).netloc
+                            )
+                            continue
+                    except Exception:
+                        pass
                     # Reuse JD HTML parser
                     try:
                         from app.adapters.jd import parse_jd_price_tax

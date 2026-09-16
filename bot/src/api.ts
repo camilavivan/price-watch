@@ -30,6 +30,9 @@ export type Watch = {
   history_stats?: HistoryStats | null;
   /** Server may set when create used user-supplied current price */
   used_manual_current?: boolean;
+  /** Server rejected a user-supplied current/trailing as bogus */
+  rejected_manual_price?: number | null;
+  reject_message?: string | null;
 };
 
 async function request<T>(

@@ -16,6 +16,10 @@ from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
 from app.history_external import fetch_external_history
+from app.price_sanity import (
+    min_plausible_price,
+    reject_manual_price_reason,
+)
 from app.services import (
     apply_price_update,
     check_watch,
@@ -51,6 +55,8 @@ class WatchCreate(BaseModel):
     trailing_price: Optional[float] = None
     name: Optional[str] = None
     platform: Optional[str] = None
+    # Bypass minPlausible / history sanity (explicit override)
+    force_price: bool = False
 
 
 class WatchTargetUpdate(BaseModel):
@@ -69,6 +75,7 @@ class WatchPriceUpdate(BaseModel):
     landing_price: Optional[float] = None
     list_price: Optional[float] = None
     tax_amount: Optional[float] = None
+    force_price: bool = False
 
 
 def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, Any]:
@@ -99,10 +106,39 @@ def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, An
     return data
 
 
-def _serialize_create(p: Product, *, used_manual_current: bool = False) -> dict[str, Any]:
+def _serialize_create(
+    p: Product,
+    *,
+    used_manual_current: bool = False,
+    rejected_manual_price: float | None = None,
+    reject_message: str | None = None,
+) -> dict[str, Any]:
     data = _serialize(p)
     data["used_manual_current"] = bool(used_manual_current)
+    data["rejected_manual_price"] = rejected_manual_price
+    data["reject_message"] = reject_message
     return data
+
+
+async def _history_lowest_for_url(url: str) -> float | None:
+    """Best-effort manmanbuy lowest for sanity checks."""
+    if not url:
+        return None
+    try:
+        series = await fetch_external_history(url)
+        if series and series.lowest is not None and float(series.lowest) > 0:
+            return float(series.lowest)
+    except Exception as e:
+        logger.debug("history lowest soft-fail: %s", e)
+    return None
+
+
+def _fetch_sanity_cfg() -> tuple[float, float]:
+    cfg = get_config().fetch
+    return (
+        min_plausible_price(getattr(cfg, "minPlausiblePrice", 10)),
+        float(getattr(cfg, "historyBogusFraction", 0.2) or 0.2),
+    )
 
 
 def _stats_dict(stats, *, source: str = "local", source_label: str | None = None) -> dict[str, Any]:
@@ -298,9 +334,13 @@ async def create_watch(
         logger.warning("initial check failed for %s: %s", product.id, e)
 
     used_manual_current = False
+    rejected_manual_price = None
+    reject_message = None
     current = body.current_price
     trailing = body.trailing_price
     target = body.target_price
+    force = bool(body.force_price)
+    min_p, hist_frac = _fetch_sanity_cfg()
 
     # Resolve single trailing number after auto fetch
     if trailing is not None and current is None and target is None:
@@ -312,28 +352,60 @@ async def create_watch(
     if target is not None:
         product.target_price = float(target)
 
-    # Use user current when auto empty (tax 0)
+    # Use user current when auto empty (tax 0) — with plausibility / history sanity
     if current is not None and product.landing_price is None:
         if current < 0:
             raise HTTPException(status_code=400, detail="当前到手价不能为负")
         lp = float(current)
-        await apply_price_update(
-            db,
-            product,
-            list_price=lp,
-            tax_amount=0.0,
-            landing_price=lp,
-            source="manual",
-            send_alert=False,
+        hist_low = await _history_lowest_for_url(
+            product.canonical_url or product.url or store_url
         )
-        used_manual_current = True
-        await db.refresh(product)
+        reason = reject_manual_price_reason(
+            lp,
+            min_plausible=min_p,
+            history_lowest=hist_low,
+            history_fraction=hist_frac,
+            force=force,
+        )
+        if reason:
+            rejected_manual_price = lp
+            reject_message = reason
+            product.needs_manual = True
+            if not product.last_error:
+                product.last_error = reason
+            await db.commit()
+            await db.refresh(product)
+            logger.info(
+                "rejected manual current id=%s price=%s reason=%s",
+                product.id,
+                lp,
+                reason,
+            )
+        else:
+            await apply_price_update(
+                db,
+                product,
+                list_price=lp,
+                tax_amount=0.0,
+                landing_price=lp,
+                source="manual",
+                send_alert=False,
+            )
+            used_manual_current = True
+            await db.refresh(product)
     elif target is not None:
         # Persist target-only change if we did not apply_price_update
         await db.commit()
         await db.refresh(product)
 
-    return {"watch": _serialize_create(product, used_manual_current=used_manual_current)}
+    return {
+        "watch": _serialize_create(
+            product,
+            used_manual_current=used_manual_current,
+            rejected_manual_price=rejected_manual_price,
+            reject_message=reject_message,
+        )
+    }
 
 
 @router.get("/watches/{watch_id}")
@@ -492,6 +564,11 @@ async def update_watch_price(
     landing = body.landing_price
     list_price = body.list_price
     tax = body.tax_amount
+    force = bool(body.force_price)
+    min_p, hist_frac = _fetch_sanity_cfg()
+    hist_low = await _history_lowest_for_url(
+        product.canonical_url or product.url or ""
+    )
 
     if list_price is not None:
         if list_price < 0:
@@ -499,6 +576,19 @@ async def update_watch_price(
         tax_val = float(tax if tax is not None else 0)
         if tax_val < 0:
             raise HTTPException(status_code=400, detail="税费不能为负")
+        candidate = float(list_price) + tax_val
+        reason = reject_manual_price_reason(
+            candidate,
+            min_plausible=min_p,
+            history_lowest=hist_low,
+            history_fraction=hist_frac,
+            force=force,
+        )
+        if reason:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{reason}。或发：填价 {watch_id} 真实到手价",
+            )
         await apply_price_update(
             db,
             product,
@@ -512,6 +602,18 @@ async def update_watch_price(
             raise HTTPException(status_code=400, detail="到手价不能为负")
         # 填价 <id> <到手价> → list_price=到手价, tax=0, landing=到手价
         lp = float(landing)
+        reason = reject_manual_price_reason(
+            lp,
+            min_plausible=min_p,
+            history_lowest=hist_low,
+            history_fraction=hist_frac,
+            force=force,
+        )
+        if reason:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{reason}。或发：填价 {watch_id} 真实到手价",
+            )
         await apply_price_update(
             db,
             product,
