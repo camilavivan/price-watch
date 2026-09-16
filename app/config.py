@@ -93,6 +93,14 @@ class OneBotConfig(BaseModel):
     notifyUsers: list[int] = Field(default_factory=list)
 
 
+
+class JdUnionConfig(BaseModel):
+    """Optional 京东联盟 open API (stub — not required for MVP cookie path)."""
+    enabled: bool = False
+    appKey: str = ""
+    appSecret: str = ""
+
+
 class AppConfig(BaseModel):
     adminToken: str = ""
     databaseUrl: str = "sqlite+aiosqlite:///./data/pricewatch.db"
@@ -103,6 +111,7 @@ class AppConfig(BaseModel):
     history: HistoryConfig = Field(default_factory=HistoryConfig)
     qqofficial: QQOfficialConfig = Field(default_factory=QQOfficialConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
+    jdUnion: JdUnionConfig = Field(default_factory=JdUnionConfig)
     # 不做微信/企微产品路径；保留字段仅为兼容旧 config.yaml（始终视为关闭）
     wecom: dict[str, Any] = Field(default_factory=dict)
 

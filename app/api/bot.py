@@ -533,16 +533,27 @@ async def update_watch_target(
 
 @router.get("/browser/jd-status")
 async def browser_jd_status(_: None = Depends(_require_admin_token)):
-    """QQ「登录状态」— Playwright / JD cookie hint (no secrets)."""
+    """QQ「登录状态」— JD/TB/PDD cookie hints (no secrets)."""
     try:
+        from app.browser.cookies_common import all_platforms_status
         from app.browser.jd_session import status_dict
 
-        return status_dict()
+        jd = status_dict()
+        multi = all_platforms_status()
+        # Backward-compatible JD fields + multi-platform summary
+        return {
+            **jd,
+            "platforms": multi["platforms"],
+            "any_logged_in": multi["any_logged_in"],
+            "preferred_login": multi["preferred_login"],
+            "qr_warning": multi["qr_warning"],
+        }
     except Exception as e:
         logger.warning("browser status failed: %s", e)
         return {
             "playwright_enabled": False,
             "has_storage_state": False,
+            "platforms": [],
             "message": f"browser module unavailable: {e}",
         }
 

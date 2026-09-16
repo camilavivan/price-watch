@@ -4,6 +4,23 @@
 
 > **诚实声明**：自动抓取可能违反电商平台服务条款，且接口随时失效；本项目仅供个人学习与自用，**不保证**价格准确性或抓取成功率。淘宝/拼多多以 HTML 尽力解析为主，失败则标记「需手动更新」。
 
+
+## 可用部署（ImmortalWrt + Docker · Cookie 粘贴）
+
+> **不要在云主机/路由上扫京东二维码**（常见「当前页面异常」）。用家里宽带浏览器登录后粘贴 Cookie。
+
+1. **本机浏览器登录** 京东 / 淘宝 / 拼多多 → F12 → Network → 复制请求头 `Cookie`
+2. 打开 Web：`http://路由IP:8080/cookies` → 选平台 → **粘贴并保存 Cookie**
+3. QQ 发链接监控：`监控 <商品链接>`；可选带价 `监控 <链接> <当前价> [目标价]`
+4. 自动取价失败 → `填价 <id> <到手价>`（或 `填价 <id> <标价> <税费>`）
+5. QQ 发 `登录状态` 查看三平台 Cookie 线索是否有效
+
+**ImmortalWrt DNS**：`docker-compose.yml` 已示例 `dns: 223.5.5.5` / `119.29.119.29`，避免容器解析不了 `p.3.cn`。
+
+**京东优先路径**：粘贴 Cookie → httpx 调 `p.3.cn/prices/mgets`（带 Cookie）→ 失败再试商品页 HTML → 可选 Playwright（`storage_state`，默认关）→ 仍失败则「填价」。
+
+**淘宝/拼多多**：同样粘贴 Cookie 后尽力 HTML 取价；云主机无 Cookie 时多半失败，请填价。海淘/JD.HK 需能在浏览器看到价格的账号 Cookie。
+
 ## 设计参考（ideas only）
 
 本仓库实现为原创代码；架构思路参考了以下开源项目（**未复制其大段版权代码**）：
@@ -102,9 +119,9 @@ landing = max(list_price + tax_amount - coupon - full_reduction, 0)
 
 | 平台 | 策略 |
 |------|------|
-| 京东 `jd` | 商品 HTML/JSON（`pPrice`/`taxFee`）→ `p.3.cn` → 公开 ware 接口 → 失败则 `needs_manual`。**云 VPS 上 jd.hk/全球购常被风控或 SPA 壳无内嵌价**，需「填价」或配置出站代理 |
-| 淘宝/天猫 `taobao` | HTML 通用解析（CNY/USD 正则 + 税费标记 + 标题/库存启发式）→ 失败则手动 |
-| 拼多多 `pdd` | 同上 |
+| 京东 `jd` | **Cookie +** `p.3.cn` → Cookie HTML →（可选）Playwright storage_state → `needs_manual`/填价。云主机勿扫码 |
+| 淘宝/天猫 `taobao` | Cookie + 详情/H5 HTML 尽力解析 → 填价；短链/手淘归一化已支持 |
+| 拼多多 `pdd` | Cookie + HTML 尽力解析 → 填价 |
 
 请求之间按 `fetch.rateLimitSeconds`（默认 1.5s）限速。
 
@@ -339,7 +356,8 @@ HTTPS_PROXY=http://host.docker.internal:7890
 
 | 思路 | 公开来源举例 | 本项目 |
 |------|--------------|--------|
-| 浏览器自动化 + 登录 Cookie（Playwright/Puppeteer） | 各类 JD/TB 监控脚本 | ✅ 可选 `fetch.playwright`；Web「浏览器登录」/ `python -m app.browser_login jd` |
+| 本机登录 Cookie 上传后 HTTP 取价 | hairconker/Product-Crawling、Mythologyli/jd-price-check、JDGuardian | ✅ Web `/cookies` 粘贴；京东优先 `p.3.cn`+Cookie |
+| 浏览器自动化 + storage_state（可选） | 各类 JD/TB 监控脚本 | ✅ 可选 `fetch.playwright`（默认关）；云主机勿扫码 |
 | 出站 HTTP/SOCKS 代理换出口 IP | mall-monitor 代理池、自建 Clash | ✅ `HTTP_PROXY` / `HTTPS_PROXY` / `JD_HTTP_PROXY` |
 | 电商联盟 / 开放平台官方价 | 淘宝客、京东联盟 | ❌ 需申请与签名；不做 |
 | 手动「填价」兜底 | 运营向工具常见 | ✅ QQ `填价` / `改价` / `手动价` |
@@ -349,29 +367,15 @@ HTTPS_PROXY=http://host.docker.internal:7890
 实操建议：云 VPS 上京东全球购优先 **填价**；代理可选；历史走势看慢慢买，失败则看本地自采。
 
 
-## Playwright 自动取价（可选）
+## Cookie 粘贴与 Playwright（可选）
 
-镜像已包含 Playwright Chromium（体积大约 **+300MB**）。默认 **关闭**。
+**主路径**：Web `/cookies` 粘贴本机 Cookie（京东 / 淘宝 / 拼多多）。默认 **不需要** 开 Playwright。
 
-1. `config.yaml`：
+`fetch.playwright.enabled` 默认 `false`。仅当 Cookie+HTTP 仍失败、且你想再试 Chromium 加载 `storage_state` 时再开启。
 
-```yaml
-fetch:
-  playwright:
-    enabled: true
-    headless: true
-    storageStatePath: "./data/browser/jd_storage.json"
-    userDataDir: "./data/browser/profile"
-    loginScreenshotPath: "./data/browser/login.png"
-```
+服务器扫码（`/browser/jd`）在云主机上**常失败**，请勿依赖。
 
-2. 首次登录（二选一）：
-   - Web：打开 `/browser/jd` →「开始登录」→ 用京东 App 扫截图里的码 →「刷新状态」
-   - CLI：`docker compose exec app python -m app.browser_login jd --wait 300`
-3. QQ 可发 `登录状态` 查看是否有 pin/thor 等 Cookie 线索
-4. 之后京东 HTTP 风控/SPA 失败时，adapter 会再试 Playwright；仍失败则 `needs_manual` + 请「填价」
-
-`./data` 已挂载，登录态落在 `./data/browser/`。
+QQ `登录状态` 会汇报三平台登录线索。`./data/browser/` 持久化 `*_cookie.txt` 与 `*_storage.json`。
 
 ## 测试
 

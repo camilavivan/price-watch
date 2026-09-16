@@ -23,7 +23,7 @@ const HELP = `【到手价监控】命令
 填价 <id> <到手价> — 手动设到手价（标价=到手价，税费=0）；别名：改价 / 手动价
 填价 <id> <标价> <税费> — 手动设标价+税费，到手价=标价+税费−券−满减
 目标 <id> <价格> — 只设置/修改目标价
-登录状态 — 查看京东浏览器登录（Playwright）是否可用
+登录状态 — 查看京东/淘宝/拼多多 Cookie 是否已粘贴
 
 说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/手淘 h5·a.m / 粉丝福利购等），机器人会自动提取链接。
 云服务器上京东全球购/jd.hk 常被风控拦截；取不到价时请在「监控」时带上当前到手价，或事后「填价」。
@@ -501,25 +501,24 @@ export async function handleCommand(
   if (text === '登录状态' || text === '登陆状态') {
     try {
       const st = await getBrowserLoginStatus(cfg);
-      if (!st.playwright_enabled) {
-        return {
-          text:
-            'Playwright 未启用（config fetch.playwright.enabled=false）。\n' +
-            '启用并完成 Web「浏览器登录」后，京东风控页可尝试自动取价；否则请继续用「填价」。',
-        };
+      const lines: string[] = ['【Cookie 登录状态】'];
+      if (st.platforms && st.platforms.length) {
+        for (const p of st.platforms) {
+          const mark = p.logged_in
+            ? `有效（${(p.markers || []).slice(0, 4).join(', ') || '已登录'}）`
+            : '无 / 未检测到';
+          lines.push(`${p.display_name}：${mark}`);
+        }
+      } else {
+        const ok = st.jd_logged_in_hint || st.cookie_http_ready;
+        lines.push(`京东：${ok ? '疑似有效' : '无 Cookie'}`);
       }
-      const ok = st.jd_logged_in_hint || st.has_storage_state;
-      return {
-        text:
-          `Playwright：已启用\n` +
-          `登录态：${ok ? '已检测到存储（可能可用）' : '未登录 / 无 storage_state'}\n` +
-          (st.cookie_names?.length
-            ? `Cookie 线索：${st.cookie_names.slice(0, 8).join(', ')}\n`
-            : '') +
-          (st.message ? `${st.message}\n` : '') +
-          `路径：${st.storage_path || '—'}\n` +
-          `未登录时请打开 Web 管理页「浏览器登录」，或：python -m app.browser_login jd`,
-      };
+      lines.push('');
+      lines.push(st.qr_warning || '云主机扫码常失败，请改用粘贴 Cookie');
+      lines.push('Web：/cookies 粘贴京东 / 淘宝 / 拼多多 Cookie');
+      lines.push('失败请用「填价」');
+      if (st.message) lines.push(st.message);
+      return { text: lines.join('\n') };
     } catch (e) {
       return { text: `查询失败：${e instanceof Error ? e.message : String(e)}` };
     }

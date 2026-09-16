@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}粘贴 Cookie — 到手价监控{% endblock %}
+{% block content %}
+<h1>粘贴 Cookie（推荐）</h1>
+<p class="muted">
+  云主机 / ImmortalWrt 上<strong>不要依赖服务器扫码</strong>（京东常显示「当前页面异常」）。
+  请在<strong>家里宽带的手机/电脑浏览器</strong>登录后，复制 Cookie 粘贴到这里。
+  保存后自动写入 <code>data/browser/*_cookie.txt</code> 与 Playwright <code>storage_state</code>。
+</p>
+
+{% if message %}
+<div class="card" style="border-left:4px solid {% if message_ok %}#22c55e{% else %}#3b82f6{% endif %};margin-bottom:1rem;">{{ message }}</div>
+{% endif %}
+
+<div class="card" style="border-left:4px solid #f59e0b;margin-bottom:1rem;">
+  <strong>云主机扫码常失败</strong>：请改用本页粘贴 Cookie。QQ 发「登录状态」可查看三平台线索。
+</div>
+
+<div class="tabs" style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem;">
+  {% for p in platforms %}
+  <a class="btn {% if p.platform != active %}secondary{% endif %}" href="/cookies?platform={{ p.platform }}">{{ p.display_name }}</a>
+  {% endfor %}
+</div>
+
+{% set cur = current %}
+<div class="card">
+  <h2 style="margin-top:0;">{{ cur.display_name }} · 登录状态</h2>
+  <ul>
+    <li>登录线索：{% if cur.logged_in %}<span class="badge">有效</span> {{ cur.markers|join(', ') }}{% else %}<span class="badge off">未检测到</span>{% endif %}</li>
+    <li>Cookie 条数：{{ cur.cookie_count }}</li>
+    <li>文件：<code>{{ cur.cookie_path }}</code></li>
+    <li>storage_state：<code>{{ cur.storage_path }}</code></li>
+    <li class="muted">{{ cur.message }}</li>
+  </ul>
+  <p class="muted">{{ cur.paste_hint }}</p>
+
+  <form method="post" action="/cookies/{{ cur.platform }}">
+    <label for="cookie">Cookie 字符串</label>
+    <textarea id="cookie" name="cookie" rows="6" style="width:100%;font-family:monospace;font-size:12px;" placeholder="粘贴完整 Cookie：name=value; name2=value2; ..."></textarea>
+    <div class="row" style="gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+      <button class="btn" type="submit">保存 Cookie</button>
+      <a class="btn secondary" href="/cookies?platform={{ cur.platform }}">刷新状态</a>
+    </div>
+  </form>
+</div>
+
+{% if active == 'jd' %}
+<div class="card" style="margin-top:1rem;opacity:0.85;">
+  <h2 style="margin-top:0;">京东服务器扫码（不推荐）</h2>
+  <p class="muted">云主机常失败。仅本机调试可试：</p>
+  <a class="btn secondary" href="/browser/jd">打开扫码页</a>
+</div>
+{% endif %}
+
+<div class="card" style="margin-top:1rem;">
+  <h2 style="margin-top:0;">三平台总览</h2>
+  <ul>
+    {% for p in platforms %}
+    <li>
+      <strong>{{ p.display_name }}</strong>：
+      {% if p.logged_in %}<span class="badge">已登录线索</span> {{ p.markers|join(', ') }}
+      {% else %}<span class="badge off">无</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

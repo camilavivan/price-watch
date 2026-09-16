@@ -83,3 +83,10 @@ onebot:
   notifyUsers: []
 
 # 微信 / 企业微信：不做产品路径（已移除）
+
+
+# 京东联盟开放平台（可选 stub；MVP 不依赖，后续可接官方价）
+jdUnion:
+  enabled: false
+  appKey: ""
+  appSecret: ""

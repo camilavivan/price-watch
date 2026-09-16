@@ -201,13 +201,26 @@ export async function updateWatchTarget(
   return data.watch;
 }
 
+export type PlatformCookieStatus = {
+  platform: string;
+  display_name: string;
+  logged_in: boolean;
+  markers?: string[];
+  message?: string;
+};
+
 export type BrowserLoginStatus = {
   playwright_enabled: boolean;
   has_storage_state: boolean;
   cookie_names?: string[];
   jd_logged_in_hint?: boolean;
+  cookie_http_ready?: boolean;
   storage_path?: string;
   message?: string;
+  platforms?: PlatformCookieStatus[];
+  any_logged_in?: boolean;
+  preferred_login?: string;
+  qr_warning?: string;
 };
 
 export async function getBrowserLoginStatus(

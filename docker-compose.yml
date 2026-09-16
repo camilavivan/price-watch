@@ -1,3 +1,4 @@
+# DNS tip: p.3.cn 解析失败时保持下方 dns: 223.5.5.5 / 119.29.119.29
 # price-watch — 到手价监控（单容器：FastAPI + QQ 官方 Bot）
 # 用法：cp config.example.yaml config.yaml && cp .env.example .env
 #       在 QQ 开放平台后台手动添加可聊天用户；.env 填 QQ_BOT_APP_ID / QQ_BOT_SECRET
@@ -44,6 +45,10 @@ services:
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # ImmortalWrt / 部分 Docker 默认 DNS 解析不了 p.3.cn；阿里/DNSPod 公共 DNS
+    dns:
+      - "223.5.5.5"
+      - "119.29.119.29"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 30s

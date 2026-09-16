@@ -202,7 +202,7 @@ async def browser_jd_start(request: Request):
             status=st,
             has_screenshot=shot.is_file(),
             screenshot_url="/browser/jd/screenshot" if shot.is_file() else None,
-            message="已在后台启动登录会话（约 2 分钟）。请扫码后点「刷新状态」；也可在容器内运行：python -m app.browser_login jd",
+            message="已在后台启动扫码会话。云主机常失败（当前页面异常），请优先打开 /cookies 粘贴 Cookie。",
         ),
     )
 
@@ -228,6 +228,57 @@ async def browser_jd_refresh(request: Request):
             message="已刷新状态",
         ),
     )
+
+
+
+@app.get("/cookies", response_class=HTMLResponse)
+async def cookies_hub(request: Request, platform: str = "jd"):
+    """Multi-platform Cookie paste hub (JD / Taobao / PDD)."""
+    from app.browser.cookies_common import SPECS, all_platforms_status, platform_status
+
+    key = (platform or "jd").strip().lower()
+    if key not in SPECS:
+        key = "jd"
+    overview = all_platforms_status()
+    return templates.TemplateResponse(
+        "cookies.html",
+        _ctx(
+            request,
+            platforms=overview["platforms"],
+            current=platform_status(key),
+            active=key,
+            message=None,
+            message_ok=False,
+        ),
+    )
+
+
+@app.post("/cookies/{platform}", response_class=HTMLResponse)
+async def cookies_save(request: Request, platform: str, cookie: str = Form("")):
+    from app.browser.cookies_common import SPECS, all_platforms_status, platform_status, save_cookie_bundle
+
+    key = (platform or "jd").strip().lower()
+    if key not in SPECS:
+        key = "jd"
+    result = save_cookie_bundle(key, cookie or "")
+    overview = all_platforms_status()
+    return templates.TemplateResponse(
+        "cookies.html",
+        _ctx(
+            request,
+            platforms=overview["platforms"],
+            current=platform_status(key),
+            active=key,
+            message=result.get("message") or result.get("error") or "已处理",
+            message_ok=bool(result.get("ok")),
+        ),
+    )
+
+
+# Alias: /cookies/jd etc. via path already; also support legacy-style
+@app.get("/cookies/jd", response_class=HTMLResponse)
+async def cookies_jd_redirect():
+    return RedirectResponse("/cookies?platform=jd", status_code=302)
 
 
 @app.get("/products/new", response_class=HTMLResponse)

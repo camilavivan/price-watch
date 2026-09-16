@@ -713,6 +713,179 @@ async def _fetch_page_parse(
     return parsed, title, image_url, status
 
 
+
+
+def _cookie_header() -> Optional[str]:
+    """Load pasted/home JD Cookie header if present."""
+    try:
+        from app.browser.jd_cookies import load_cookie_header, looks_logged_in, parse_cookie_header
+
+        header = load_cookie_header()
+        if not header:
+            return None
+        if looks_logged_in(parse_cookie_header(header)):
+            return header
+        # Still return header if any cookies — may help lightly
+        return header
+    except Exception as e:
+        logger.debug("JD cookie load soft-fail: %s", e)
+        return None
+
+
+def _min_plausible() -> float:
+    try:
+        from app.price_sanity import min_plausible_price
+        from app.config import get_config
+
+        return min_plausible_price(getattr(get_config().fetch, "minPlausiblePrice", 10))
+    except Exception:
+        return 10.0
+
+
+def _reject_implausible(price: Optional[float]) -> Optional[float]:
+    if price is None:
+        return None
+    try:
+        from app.price_sanity import is_plausible_retail
+
+        if not is_plausible_retail(price, min_plausible=_min_plausible()):
+            return None
+    except Exception:
+        if price < 10:
+            return None
+    return price
+
+
+async def _try_price_host_with_cookie(sku: str, host: str, cookie: str) -> Optional[float]:
+    """p.3.cn-style price API with Cookie + Referer (home broadband cookies)."""
+    api_url = f"https://{host}/prices/mgets?skuIds=J_{sku}&type=1"
+    headers = {
+        "User-Agent": BROWSER_UA,
+        "Referer": f"https://item.jd.com/{sku}.html",
+        "Accept": "application/json, text/javascript, */*;q=0.01",
+        "Cookie": cookie,
+    }
+    try:
+        async with make_async_client(timeout=12.0, follow_redirects=True) as client:
+            resp = await client.get(api_url, headers=headers)
+            if resp.status_code != 200:
+                logger.info("JD cookie %s status=%s sku=%s", host, resp.status_code, sku)
+                return None
+            text = resp.text or ""
+            if _is_unusable_api_body(text):
+                return None
+            data = resp.json()
+            if not (isinstance(data, list) and data):
+                return None
+            item = data[0]
+            for key in ("p", "op", "m"):
+                price = _reject_implausible(_to_price(item.get(key)))
+                if price is not None:
+                    logger.info(
+                        "JD price found source=cookie:%s sku=%s price=%s",
+                        host,
+                        sku,
+                        price,
+                    )
+                    return price
+    except Exception as e:
+        if _is_dns_error(e):
+            logger.info(
+                "JD cookie %s DNS soft-fail sku=%s (try compose dns 223.5.5.5): %s",
+                host,
+                sku,
+                e,
+            )
+        else:
+            logger.info("JD cookie %s soft-fail sku=%s: %s", host, sku, e)
+    return None
+
+
+async def _try_p3cn_with_cookie(sku: str, cookie: str) -> Optional[float]:
+    for host in ("p.3.cn", "pe.3.cn"):
+        price = await _try_price_host_with_cookie(sku, host, cookie)
+        if price is not None:
+            return price
+    return None
+
+
+async def _fetch_page_parse_with_cookie(
+    url: str,
+    cookie: str,
+) -> tuple[dict[str, Optional[float]], Optional[str], Optional[str], str]:
+    """Fetch item/mitem HTML with Cookie; reject login wall / ??? / below minPlausible."""
+    headers = {
+        **DEFAULT_HEADERS,
+        "Cookie": cookie,
+        "Referer": "https://www.jd.com/",
+    }
+    try:
+        html = await fetch_html(url, timeout=15.0, headers=headers)
+    except Exception as e:
+        if _is_dns_error(e):
+            return (
+                {"list_price": None, "tax_amount": None, "note": None},
+                None,
+                None,
+                f"DNS失败:{_host(url)}",
+            )
+        logger.info("JD cookie page fail url=%s: %s", url[:80], e)
+        return (
+            {"list_price": None, "tax_amount": None, "note": None},
+            None,
+            None,
+            f"请求失败:{_host(url)}",
+        )
+
+    try:
+        from app.price_sanity import is_login_wall_text
+
+        if is_login_wall_text(html):
+            return (
+                {
+                    "list_price": None,
+                    "tax_amount": None,
+                    "note": "登录查看价格/登录墙，无真实价格",
+                },
+                None,
+                None,
+                f"登录墙:{_host(url)}",
+            )
+    except Exception:
+        pass
+
+    if _looks_like_risk_html(html):
+        return (
+            {"list_price": None, "tax_amount": None, "note": None},
+            None,
+            None,
+            f"风控页:{_host(url)}",
+        )
+
+    parsed = parse_jd_price_tax(html)
+    if parsed.get("list_price") is not None:
+        parsed["list_price"] = _reject_implausible(float(parsed["list_price"]))
+    generic = extract_from_html(html, base_url=url)
+    title = generic.title
+    image_url = generic.image_url
+    if parsed.get("list_price") is None and generic.ok and generic.price:
+        gp = _reject_implausible(generic.price)
+        if gp is not None:
+            parsed = {
+                "list_price": gp,
+                "tax_amount": generic.tax_amount or 0.0,
+                "note": "京东 HTML+Cookie 通用解析",
+            }
+    status = "ok" if parsed.get("list_price") else f"无价格:{_host(url)}"
+    if parsed.get("list_price"):
+        logger.info(
+            "JD price found source=cookie-html:%s price=%s",
+            _host(url),
+            parsed.get("list_price"),
+        )
+    return parsed, title, image_url, status
+
+
 class JDAdapter:
     platform = "jd"
     display_name = "京东"
@@ -745,42 +918,89 @@ class JDAdapter:
         tried: list[str] = []
         saw_risk = False
         saw_spa = False
+        saw_login_wall = False
 
-        # 1) Prefer actual expanded / HK product HTML first (not p.3.cn)
-        for page_url in page_urls:
-            tried.append(_host(page_url) or page_url[:40])
-            parsed, t1, i1, status = await _fetch_page_parse(page_url)
-            title = title or t1
-            image_url = image_url or i1
-            if status.startswith("风控"):
-                saw_risk = True
-            if status.startswith("SPA无价格"):
-                saw_spa = True
-            if parsed.get("tax_amount") and not tax_amount:
-                tax_amount = float(parsed["tax_amount"] or 0)
-            if parsed.get("list_price"):
-                list_price = float(parsed["list_price"])
-                if parsed.get("tax_amount") is not None:
-                    tax_amount = float(parsed["tax_amount"] or 0)
-                note = (parsed.get("note") or "JD HTML/JSON") + f" ({_host(page_url)})"
-                break
+        cookie = _cookie_header()
 
-        # 2) p.3.cn / pe.3.cn — soft DNS, never required
-        if list_price is None:
-            tried.append("p.3.cn/pe.3.cn")
-            api_price = await _try_p3cn(sku)
+        # --- Cookie HTTP path (primary when home cookies pasted) ---
+        if cookie:
+            tried.append("cookie:p.3.cn")
+            api_price = await _try_p3cn_with_cookie(sku, cookie)
             if api_price is not None:
                 list_price = api_price
-                note = "来自京东公开价格接口（到手价需自行填券/满减；海淘税费另计）"
+                note = "京东 Cookie + p.3.cn 公开价（到手价需自行填券/满减；海淘税费另计）"
 
-        # 3) Optional secondary public endpoints (api.m.jd.com / color.jd.hk / item-soa)
-        if list_price is None:
-            tried.append("api.m.jd.com/color.jd.hk")
-            sec = await _try_secondary_endpoints(sku, prefer_hk=prefer_hk)
-            if sec and sec.get("list_price"):
-                list_price = float(sec["list_price"])
-                tax_amount = float(sec.get("tax_amount") or 0)
-                note = sec.get("note")
+            if list_price is None:
+                for page_url in page_urls:
+                    tried.append(f"cookie-html:{_host(page_url) or page_url[:40]}")
+                    parsed, t1, i1, status = await _fetch_page_parse_with_cookie(
+                        page_url, cookie
+                    )
+                    title = title or t1
+                    image_url = image_url or i1
+                    if status.startswith("风控"):
+                        saw_risk = True
+                    if status.startswith("登录墙"):
+                        saw_login_wall = True
+                    if status.startswith("SPA无价格"):
+                        saw_spa = True
+                    if parsed.get("tax_amount") and not tax_amount:
+                        tax_amount = float(parsed["tax_amount"] or 0)
+                    if parsed.get("list_price"):
+                        list_price = float(parsed["list_price"])
+                        if parsed.get("tax_amount") is not None:
+                            tax_amount = float(parsed["tax_amount"] or 0)
+                        note = (
+                            (parsed.get("note") or "JD HTML+Cookie")
+                            + f" ({_host(page_url)})"
+                        )
+                        break
+
+            if list_price is None:
+                tried.append("cookie:api.m.jd.com")
+                # Secondary with Cookie header via temporary client headers is hard;
+                # reuse page parse path already attempted. Soft continue.
+
+        # --- Anonymous HTML / public APIs (when no cookie or cookie failed) ---
+        if list_price is None and not cookie:
+            for page_url in page_urls:
+                tried.append(_host(page_url) or page_url[:40])
+                parsed, t1, i1, status = await _fetch_page_parse(page_url)
+                title = title or t1
+                image_url = image_url or i1
+                if status.startswith("风控"):
+                    saw_risk = True
+                if status.startswith("SPA无价格"):
+                    saw_spa = True
+                if parsed.get("tax_amount") and not tax_amount:
+                    tax_amount = float(parsed["tax_amount"] or 0)
+                if parsed.get("list_price"):
+                    lp = _reject_implausible(float(parsed["list_price"]))
+                    if lp is None:
+                        continue
+                    list_price = lp
+                    if parsed.get("tax_amount") is not None:
+                        tax_amount = float(parsed["tax_amount"] or 0)
+                    note = (parsed.get("note") or "JD HTML/JSON") + f" ({_host(page_url)})"
+                    break
+
+            if list_price is None:
+                tried.append("p.3.cn/pe.3.cn")
+                api_price = await _try_p3cn(sku)
+                api_price = _reject_implausible(api_price)
+                if api_price is not None:
+                    list_price = api_price
+                    note = "来自京东公开价格接口（到手价需自行填券/满减；海淘税费另计）"
+
+            if list_price is None:
+                tried.append("api.m.jd.com/color.jd.hk")
+                sec = await _try_secondary_endpoints(sku, prefer_hk=prefer_hk)
+                if sec and sec.get("list_price"):
+                    lp = _reject_implausible(float(sec["list_price"]))
+                    if lp is not None:
+                        list_price = lp
+                        tax_amount = float(sec.get("tax_amount") or 0)
+                        note = sec.get("note")
 
         # Always enrich title/image
         if not title or not image_url:
@@ -789,78 +1009,79 @@ class JDAdapter:
             image_url = image_url or i2
 
         if list_price is not None and list_price > 0:
-            logger.info(
-                "JD fetch ok sku=%s price=%s tax=%s source=%s",
-                sku,
-                list_price,
-                tax_amount,
-                note,
-            )
-            return FetchResult(
-                ok=True,
-                list_price=list_price,
-                tax_amount=float(tax_amount or 0),
-                title=title,
-                image_url=image_url,
-                needs_manual=False,
-                raw_note=note or "京东价格解析",
-            )
+            checked = _reject_implausible(float(list_price))
+            if checked is not None:
+                logger.info(
+                    "JD fetch ok sku=%s price=%s tax=%s source=%s",
+                    sku,
+                    checked,
+                    tax_amount,
+                    note,
+                )
+                return FetchResult(
+                    ok=True,
+                    list_price=checked,
+                    tax_amount=float(tax_amount or 0),
+                    title=title,
+                    image_url=image_url,
+                    needs_manual=False,
+                    raw_note=note or "京东价格解析",
+                )
+            list_price = None
 
-        # 4) Optional Playwright (logged-in Chromium) when HTTP hit risk/SPA
-        if saw_risk or saw_spa or list_price is None:
+        # Optional Playwright using storage_state (no QR) — only if enabled + cookies
+        if list_price is None:
             try:
                 from app.browser.jd_playwright import fetch_jd_with_playwright
                 from app.browser.jd_session import playwright_enabled
 
-                if playwright_enabled():
-                    tried.append("playwright")
+                if playwright_enabled() and cookie:
+                    tried.append("playwright+storage_state")
                     pw = await fetch_jd_with_playwright(sku, preferred)
                     if pw and pw.get("list_price"):
-                        list_price = float(pw["list_price"])
-                        tax_amount = float(pw.get("tax_amount") or 0)
-                        if pw.get("title") and (
-                            not title or str(title).startswith("京东商品")
-                        ):
-                            title = str(pw["title"])
-                        note = str(pw.get("note") or "playwright")
-                        logger.info(
-                            "JD playwright ok sku=%s price=%s tax=%s",
-                            sku,
-                            list_price,
-                            tax_amount,
-                        )
-                        return FetchResult(
-                            ok=True,
-                            list_price=list_price,
-                            tax_amount=tax_amount,
-                            title=title,
-                            image_url=image_url,
-                            needs_manual=False,
-                            raw_note=note,
-                        )
+                        lp = _reject_implausible(float(pw["list_price"]))
+                        if lp is not None:
+                            list_price = lp
+                            tax_amount = float(pw.get("tax_amount") or 0)
+                            if pw.get("title") and (
+                                not title or str(title).startswith("京东商品")
+                            ):
+                                title = str(pw["title"])
+                            note = str(pw.get("note") or "playwright")
+                            return FetchResult(
+                                ok=True,
+                                list_price=list_price,
+                                tax_amount=tax_amount,
+                                title=title,
+                                image_url=image_url,
+                                needs_manual=False,
+                                raw_note=note,
+                            )
             except Exception as e:
                 logger.warning("JD playwright soft-fail sku=%s: %s", sku, e)
 
-        tried_s = "、".join(dict.fromkeys(tried))  # preserve order, unique
+        tried_s = "、".join(dict.fromkeys(tried))
+        tip = "请用 QQ「填价」或 Web 粘贴本机京东 Cookie 后重试"
+        if saw_login_wall:
+            tip = "登录墙/¥???：请重新粘贴有效 Cookie，或用「填价」"
         if saw_risk or saw_spa:
             extra = []
             if saw_risk:
                 extra.append("风控验证页")
             if saw_spa:
-                extra.append("页面无内嵌价格（需接口/手动）")
-            err = JD_BLOCKED_ERROR + f"（已试：{tried_s}；{ '、'.join(extra) }）"
+                extra.append("页面无内嵌价格")
+            err = JD_BLOCKED_ERROR + f"（已试：{tried_s}；{'、'.join(extra)}）。{tip}"
         else:
-            err = (
-                JD_BLOCKED_ERROR
-                + f"（已试：{tried_s}）。"
-                "若为海淘/JD.HK 商品请确认链接为 jd.hk。"
-            )
+            err = JD_BLOCKED_ERROR + f"（已试：{tried_s}）。{tip}"
+        if not cookie:
+            err += "；云主机扫码常失败，请打开 /cookies 粘贴 Cookie"
         logger.info(
-            "JD fetch needs_manual sku=%s tried=%s risk=%s spa=%s",
+            "JD fetch needs_manual sku=%s tried=%s risk=%s spa=%s cookie=%s",
             sku,
             tried_s,
             saw_risk,
             saw_spa,
+            bool(cookie),
         )
         return FetchResult(
             ok=False,
