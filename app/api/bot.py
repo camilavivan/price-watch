@@ -15,6 +15,7 @@ from app.adapters import get_adapter
 from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
+from app.history_external import fetch_external_history
 from app.services import (
     apply_price_update,
     check_watch,
@@ -89,7 +90,8 @@ def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, An
     return data
 
 
-def _stats_dict(stats) -> dict[str, Any]:
+def _stats_dict(stats, *, source: str = "local", source_label: str | None = None) -> dict[str, Any]:
+    label = source_label or ("来源：慢慢买" if source == "manmanbuy" else "来源：本地自采")
     return {
         "days": stats.days,
         "count": stats.count,
@@ -98,7 +100,60 @@ def _stats_dict(stats) -> dict[str, Any]:
         "avg": stats.avg,
         "is_history_low": stats.is_history_low,
         "sparkline": sparkline(stats.prices),
+        "source": source,
+        "source_label": label,
     }
+
+
+def _external_to_stats_dict(series, *, current_landing=None, days: int | None = None) -> dict[str, Any]:
+    """Build history_stats dict from manmanbuy series (prefer for display)."""
+    from app.config import get_config
+    from app.services import is_near_history_low
+
+    cfg = get_config().alerts
+    days_v = int(days if days is not None else cfg.historyLowDays or 90)
+    prices = series.prices()
+    # Optionally trim to lookback window by ts
+    if series.points and days_v > 0:
+        import time
+        cutoff_ms = int((time.time() - days_v * 86400) * 1000)
+        trimmed = [p.price for p in series.points if p.ts >= cutoff_ms]
+        if trimmed:
+            prices = trimmed
+    lowest = min(prices) if prices else series.lowest
+    highest = max(prices) if prices else series.highest
+    avg = round(sum(prices) / len(prices), 2) if prices else series.avg
+    at_low = False
+    if current_landing is not None and lowest is not None:
+        at_low = is_near_history_low(
+            float(current_landing), float(lowest), cfg.historyLowTolerancePercent
+        )
+    return {
+        "days": days_v,
+        "count": len(prices),
+        "lowest": lowest,
+        "highest": highest,
+        "avg": avg,
+        "is_history_low": at_low,
+        "sparkline": sparkline(prices),
+        "source": "manmanbuy",
+        "source_label": "来源：慢慢买",
+    }
+
+
+async def _preferred_history_stats(product, db, local_stats) -> dict[str, Any]:
+    """Prefer external (慢慢买) series for QQ 历史/详情 display; fall back to local."""
+    url = product.canonical_url or product.url or ""
+    try:
+        series = await fetch_external_history(url) if url else None
+    except Exception as e:
+        logger.warning("external history soft-fail id=%s: %s", product.id, e)
+        series = None
+    if series and series.count > 0:
+        return _external_to_stats_dict(
+            series, current_landing=product.landing_price, days=local_stats.days
+        )
+    return _stats_dict(local_stats, source="local")
 
 
 async def _find_existing(
@@ -240,10 +295,11 @@ async def get_watch(
     product = await db.get(Product, watch_id)
     if not product or product.owner_openid != openid:
         raise HTTPException(status_code=404, detail="监控不存在或不属于你")
-    stats = await compute_local_history_stats(
+    local = await compute_local_history_stats(
         db, product.id, current_landing=product.landing_price
     )
-    return {"watch": _serialize(product, history_stats=_stats_dict(stats))}
+    stats = await _preferred_history_stats(product, db, local)
+    return {"watch": _serialize(product, history_stats=stats)}
 
 
 @router.delete("/watches/{watch_id}")
@@ -296,13 +352,40 @@ async def watch_history(
         }
         for h in rows
     ]
-    stats = await compute_local_history_stats(
+    local = await compute_local_history_stats(
         db, watch_id, current_landing=product.landing_price
     )
+    stats = await _preferred_history_stats(product, db, local)
+    # When external series available, also expose a compact external recent list
+    external_history = []
+    if stats.get("source") == "manmanbuy":
+        try:
+            series = await fetch_external_history(product.canonical_url or product.url or "")
+            if series and series.points:
+                # last N points for display (newest first to match local order)
+                tail = series.points[-limit:]
+                external_history = [
+                    {
+                        "landing_price": p.price,
+                        "list_price": p.price,
+                        "tax_amount": 0,
+                        "coupon_amount": 0,
+                        "full_reduction": 0,
+                        "source": "manmanbuy",
+                        "recorded_at": __import__("datetime").datetime.utcfromtimestamp(
+                            p.ts / 1000.0
+                        ).isoformat(timespec="seconds"),
+                    }
+                    for p in reversed(tail)
+                ]
+        except Exception as e:
+            logger.warning("external history points soft-fail: %s", e)
     return {
         "watch_id": watch_id,
         "history": history,
-        "history_stats": _stats_dict(stats),
+        "history_stats": stats,
+        "external_history": external_history,
+        "history_source": stats.get("source", "local"),
     }
 
 

@@ -429,12 +429,40 @@ async def check_watch(session: AsyncSession, product: Product) -> dict:
     if not result.ok:
         product.needs_manual = True
         product.last_error = result.error
+        hint_applied = False
+        hint_price = None
+        # Soft current-price hint from 慢慢买 when JD/TB auto fetch fails
+        try:
+            from app.history_external import latest_external_price, soft_price_hint_enabled
+
+            if soft_price_hint_enabled(product.platform or ""):
+                hint_url = fetch_url or product.canonical_url or product.url or ""
+                hint_price = await latest_external_price(hint_url) if hint_url else None
+                if hint_price is not None and hint_price > 0:
+                    product.list_price = float(hint_price)
+                    product.tax_amount = 0.0
+                    product.landing_price = float(hint_price)
+                    note = (product.note or "").strip()
+                    tag = "价格参考：慢慢买最新点（可用「填价」覆盖）"
+                    if tag not in note:
+                        product.note = f"{note}；{tag}".lstrip("；") if note else tag
+                    await record_history(session, product, source="manmanbuy_hint")
+                    hint_applied = True
+                    logger.info(
+                        "manmanbuy soft price hint id=%s price=%s",
+                        product.id,
+                        hint_price,
+                    )
+        except Exception as e:
+            logger.warning("manmanbuy soft price hint failed id=%s: %s", product.id, e)
         await session.commit()
         return {
             "product_id": product.id,
             "ok": False,
             "needs_manual": True,
             "error": result.error,
+            "external_hint": hint_applied,
+            "external_hint_price": hint_price,
         }
 
     product.needs_manual = False

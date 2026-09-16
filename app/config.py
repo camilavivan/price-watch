@@ -32,6 +32,18 @@ class AlertsConfig(BaseModel):
     historyLowTolerancePercent: float = 0.5  # within 0.5% of window low → 历史新低
 
 
+class HistoryConfig(BaseModel):
+    """External history (慢慢买) + local fallback."""
+    enabled: bool = True
+    # manmanbuy | none
+    external: str = "manmanbuy"
+    cacheSeconds: int = 3600
+    rateLimitSeconds: float = 2.0
+    # When JD/TB auto fetch fails, try latest manmanbuy point as soft hint
+    softPriceHint: bool = True
+    softPriceHintPlatforms: list[str] = Field(default_factory=lambda: ["jd", "taobao"])
+
+
 class WebConfig(BaseModel):
     """Debug/admin UI — listen all interfaces; protect with ADMIN_TOKEN when exposed."""
     host: str = "0.0.0.0"
@@ -69,6 +81,7 @@ class AppConfig(BaseModel):
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     fetch: FetchConfig = Field(default_factory=FetchConfig)
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     qqofficial: QQOfficialConfig = Field(default_factory=QQOfficialConfig)
     onebot: OneBotConfig = Field(default_factory=OneBotConfig)
     # 不做微信/企微产品路径；保留字段仅为兼容旧 config.yaml（始终视为关闭）

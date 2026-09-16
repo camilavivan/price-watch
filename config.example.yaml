@@ -34,6 +34,17 @@ alerts:
   historyLowDays: 90          # 回看天数，常用 30 / 90 / 180
   historyLowTolerancePercent: 0.5  # 当前价在最低价 0.5% 内视为历史新低
 
+
+# 价格历史：外部（慢慢买 best-effort）优先展示；本地 price_history 作兜底与告警快照
+history:
+  enabled: true
+  external: manmanbuy   # manmanbuy | none
+  cacheSeconds: 3600
+  rateLimitSeconds: 2.0
+  # 京东/淘宝自动取价失败时，用慢慢买最新点作软参考价（仍可用「填价」覆盖）
+  softPriceHint: true
+  softPriceHintPlatforms: ["jd", "taobao"]
+
 # QQ 官方开放平台 Bot（主路径）
 # 使用 WebSocket 出站，无需公网入站端口 / webhook
 qqofficial:

@@ -13,6 +13,7 @@
 | [PriceDive](https://github.com/DAILtech/PriceDive) | 商品中心 + `platform`/`url` 目标；SQLite 价格历史；**不做**其模拟随机价，京东仍真实尽力拉取 |
 | [MarketEye](https://github.com/dachengzi065-gif/marketeye) | 丢链接即监控；`check` 引擎：fetch→parse→compare→alert→snapshot；通用 CNY/USD 正则与 UA；0.5% 价格噪声；FastAPI+SQLite+调度 |
 | ecommerce-price-analysis | 清晰的平台 collector/adapter 分层；请求间 rate limit；轻度中文文本归一 |
+| [manmanbuy_js_crack](https://github.com/PPsteven/manmanbuy_js_crack) / [mall-monitor](https://github.com/zhangbincheng1997/mall-monitor) / [hamflx gist](https://gist.github.com/hamflx/41cf079dbf81b25d59a1d5da08a2c68d) | 慢慢买 HistoryLowest ticket + `getHistoryTrend` token 方案（思路） |
 
 ## 架构
 
@@ -69,9 +70,23 @@
 3. 京东最终页尽量抽出 `skuId` → `https://item.jd.com/{sku}.html`
 4. 淘宝/天猫抽出 `id=` → `item.taobao.com` 或 `detail.tmall.com`
 
-分享文案里的 `https://m.tb.cn/...` / `https://3.jd.hk/...` 会被自动提取（即使夹在 💲🔐、淘口令、【京东】等杂质中）。「标题」/【标题】也会作为监控名称提示传入。
+分享文案里的 `https://m.tb.cn/...` / `https://e.tb.cn/...` / `https://3.jd.hk/...` 会被自动提取（即使夹在 💲🔐、淘口令、【京东】等杂质中）。「标题」/【标题】也会作为监控名称提示传入。
 
-**限制**：纯淘口令（只有口令、**没有** `m.tb.cn` 等 URL）需要淘宝联盟等付费/授权 API，**本项目不支持**。请粘贴带短链的分享文案。
+### 手淘链接
+
+支持常见手机淘宝分享/详情 URL，并归一化为带 `id=` 的稳定桌面链：
+
+| 形态 | 示例 | 归一化 |
+|------|------|--------|
+| H5 详情 | `h5.m.taobao.com/awp/core/detail.htm?id=` | `item.taobao.com/item.htm?id=` |
+| a 站短详情 | `a.m.taobao.com/i{id}.htm` | 同上（已带 id 时**不再**当短链展开） |
+| market | `market.m.taobao.com/...?...id=` | 同上 |
+| e 短链 | `e.tb.cn/...` | 多跳展开后抽 id |
+| m.tb.cn | 已有 | 多跳展开 |
+
+天猫 host 则落到 `detail.tmall.com/item.htm?id=`。
+
+**限制**：纯淘口令（只有口令、**没有** `m.tb.cn` / `e.tb.cn` 等 URL）需要淘宝联盟等付费/授权 API，**本项目不支持**。请粘贴带短链的分享文案。
 
 ## 到手价公式
 
@@ -140,8 +155,8 @@ cp .env.example .env
 | `监控 <商品链接> [目标价]` | 归一化 URL → 自动识别平台 → 为当前用户添加监控 |
 | `列表` | 我的监控（id / 标题 / 到手价 / 目标） |
 | `取消 <id>` | 删除我的监控 |
-| `历史 <id>` | 最近 N 条自采到手价 + 近 N 天最低/均价/最高与文字走势 |
-| `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分（含税费，若 >0）+ 自采历史统计；有图则尝试发图 |
+| `历史 <id>` | 近期到手价 + 近 N 天最低/均价/最高与走势（**优先慢慢买**，失败则本地自采） |
+| `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分（含税费，若 >0）+ 历史统计（标注来源）；有图则尝试发图 |
 | `填价 <id> <到手价>` | 手动设到手价（标价=到手价，税费=0）；别名 `改价` / `手动价` |
 | `填价 <id> <标价> <税费>` | 手动设标价+税费；到手价 = 标价 + 税费 − 券 − 满减 |
 
@@ -205,6 +220,11 @@ alerts:
   historyLowDays: 90
   historyLowTolerancePercent: 0.5
 
+history:
+  enabled: true
+  external: manmanbuy
+  softPriceHint: true
+
 qqofficial:
   enabled: true
   sandbox: false
@@ -222,11 +242,29 @@ onebot:
 
 环境变量：`QQ_BOT_APP_ID` / `QQ_BOT_SECRET` / `ADMIN_TOKEN` / `DATABASE_URL` / `APP_API_BASE` / `BOT_NOTIFY_URL` / `WEB_PORT` / `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `JD_HTTP_PROXY`
 
-## 自采价格历史
+## 价格历史（慢慢买 + 本地自采）
 
-每次成功抓价或手动更新写入 `price_history`。按窗口计算最低/最高/均价，接近窗口最低价时触发「历史新低」告警。
+QQ「历史」「详情」展示时：
 
-> **关于什么值得买（SMZDM）**：官方开放平台需商务邀请，无自助开通。本项目**不依赖** SMZDM API。
+1. **优先**请求慢慢买 `getHistoryTrend`（非官方第三方），用其序列算最低/均价/最高与走势，并标注 **「来源：慢慢买」**
+2. 若网络/403/验证码导致外部为空 → **回退**本地 `price_history`，标注 **「来源：本地自采」**
+3. 本地表仍在每次成功抓价 /「填价」后写入，供告警「历史新低」与兜底展示
+
+配置（`config.yaml`）：
+
+```yaml
+history:
+  enabled: true
+  external: manmanbuy   # 或 none 关闭外部
+  cacheSeconds: 3600
+  rateLimitSeconds: 2.0
+  softPriceHint: true   # 京东/淘宝自动取价失败时，用慢慢买最新点作软参考价
+  softPriceHintPlatforms: ["jd", "taobao"]
+```
+
+> **关于什么值得买（SMZDM）**：官方开放平台需商务邀请，无自助开通。本项目**不依赖、不声称** SMZDM 官方 API。
+>
+> **慢慢买限制**：非官方接口，可能需验证码 / 返回 403；实现为 best-effort，失败只打日志、不拖垮 Bot。公开脚本参考：[PPsteven/manmanbuy_js_crack](https://github.com/PPsteven/manmanbuy_js_crack)、[mall-monitor](https://github.com/zhangbincheng1997/mall-monitor)、[hamflx gist](https://gist.github.com/hamflx/41cf079dbf81b25d59a1d5da08a2c68d)。
 
 ## 构建超时 / 国内镜像
 
@@ -266,13 +304,29 @@ HTTPS_PROXY=http://host.docker.internal:7890
 
 `docker-compose.yml` 已把上述变量传入 `app` 容器。代理只改善出口 IP/线路，**不保证**绕过京东验证；失败时请用「填价」。
 
+
+## 反爬 / 取价思路（公开仓库归纳 + 本项目落地）
+
+公开监控/比价项目常见做法（**本仓库未整段复制其代码**）：
+
+| 思路 | 公开来源举例 | 本项目 |
+|------|--------------|--------|
+| 浏览器自动化 + 登录 Cookie（Playwright/Puppeteer） | 各类 JD/TB 监控脚本 | **未**在本 PR 引入完整 Playwright；文档记录备选 |
+| 出站 HTTP/SOCKS 代理换出口 IP | mall-monitor 代理池、自建 Clash | ✅ `HTTP_PROXY` / `HTTPS_PROXY` / `JD_HTTP_PROXY` |
+| 电商联盟 / 开放平台官方价 | 淘宝客、京东联盟 | ❌ 需申请与签名；不做 |
+| 手动「填价」兜底 | 运营向工具常见 | ✅ QQ `填价` / `改价` / `手动价` |
+| 第三方历史价（慢慢买） | manmanbuy_js_crack、mall-monitor、hamflx | ✅ `app/history_external.py` best-effort |
+| 短链多跳展开 + 手淘 URL 归一 | 分享监控类项目 | ✅ `resolve_url` + `h5`/`a.m`/`e.tb.cn` |
+
+实操建议：云 VPS 上京东全球购优先 **填价**；代理可选；历史走势看慢慢买，失败则看本地自采。
+
 ## 测试
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
-覆盖 URL 归一化与告警判定（目标价 / 降幅 / 历史新低 / 噪声抑制）。
+覆盖 URL 归一化（含手淘）、慢慢买 token/datePrice 解析、告警判定（目标价 / 降幅 / 历史新低 / 噪声抑制）。
 
 ## 技术栈
 

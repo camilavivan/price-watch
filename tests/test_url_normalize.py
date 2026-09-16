@@ -260,5 +260,56 @@ class TestUrlNormalize(unittest.TestCase):
         self.assertEqual(extract_title_hint(paste), "有机纯牛奶")
 
 
+    def test_shoutao_h5_detail(self):
+        """手淘 h5.m.taobao.com/awp/core/detail.htm?id= → canonical with id."""
+        u = "https://h5.m.taobao.com/awp/core/detail.htm?id=654321098765&spm=a1.2"
+        info = normalize_url(u)
+        self.assertEqual(info.platform, "taobao")
+        self.assertEqual(info.sku_id, "654321098765")
+        self.assertEqual(info.canonical_url, "https://item.taobao.com/item.htm?id=654321098765")
+        self.assertFalse(is_short_link(u))
+
+    def test_shoutao_a_m_ihtm(self):
+        """手淘 a.m.taobao.com/i{id}.htm → extract id, not treated as bare short link."""
+        u = "https://a.m.taobao.com/i654321098765.htm"
+        self.assertEqual(detect_platform(u), "taobao")
+        self.assertEqual(extract_taobao_id(u), "654321098765")
+        self.assertFalse(is_short_link(u))
+        info = normalize_url(u)
+        self.assertEqual(info.sku_id, "654321098765")
+        self.assertEqual(info.canonical_url, "https://item.taobao.com/item.htm?id=654321098765")
+
+    def test_shoutao_a_m_without_id_still_short(self):
+        u = "https://a.m.taobao.com/share.htm"
+        self.assertEqual(detect_platform(u), "taobao")
+        self.assertTrue(is_short_link(u))
+
+    def test_shoutao_market_m(self):
+        u = "https://market.m.taobao.com/app/tb-source-app/shopdetail/pages/index?id=112233445566"
+        self.assertEqual(detect_platform(u), "taobao")
+        self.assertEqual(extract_taobao_id(u), "112233445566")
+        info = normalize_url(u)
+        self.assertEqual(info.canonical_url, "https://item.taobao.com/item.htm?id=112233445566")
+
+    def test_e_tb_cn_short(self):
+        u = "https://e.tb.cn/h.abcXYZ"
+        self.assertEqual(detect_platform(u), "taobao")
+        self.assertTrue(is_short_link(u))
+
+    def test_extract_best_url_prefers_a_m_taobao(self):
+        paste = (
+            "see https://www.example.com/x and "
+            "https://a.m.taobao.com/i654321098765.htm deal"
+        )
+        self.assertEqual(extract_best_url(paste), "https://a.m.taobao.com/i654321098765.htm")
+
+    def test_html_embed_a_m_taobao(self):
+        html = '<a href="https://a.m.taobao.com/i998877665544.htm">go</a>'
+        self.assertEqual(
+            extract_url_from_html(html),
+            "https://a.m.taobao.com/i998877665544.htm",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -135,7 +135,8 @@ _TITLE_STRIP_PREFIXES = (
 
 UNKNOWN_PLATFORM_MSG = (
     "无法识别平台，请使用京东 / 淘宝(天猫) / 拼多多商品链接"
-    "（支持短链：m.tb.cn、tb.cn、u.jd.com、3.cn、3.jd.hk、p.pinduoduo.com 等，"
+    "（支持短链：m.tb.cn、e.tb.cn、tb.cn、u.jd.com、3.cn、3.jd.hk、"
+    "p.pinduoduo.com 等；手淘：h5.m.taobao.com、a.m.taobao.com/i{id}.htm；"
     "短链会自动跳转展开）"
 )
 
@@ -209,6 +210,8 @@ def _commerce_url_priority(url: str) -> int:
         "tb.cn",
         "e.tb.cn",
         "s.tb.cn",
+        "a.m.taobao.com",
+        "h5.m.taobao.com",
         "u.jd.com",
         "3.jd.com",
         "3.jd.hk",
@@ -314,13 +317,15 @@ def detect_platform(url: str) -> Optional[str]:
     ):
         return "jd"
 
-    # --- Taobao / Tmall short + long ---
+    # --- Taobao / Tmall short + long (含手淘 h5/a.m/market) ---
     if host in (
         "m.tb.cn",
         "tb.cn",
         "e.tb.cn",
         "s.tb.cn",
         "a.m.taobao.com",
+        "h5.m.taobao.com",
+        "market.m.taobao.com",
     ) or host.endswith(".tb.cn"):
         return "taobao"
     if (
@@ -356,6 +361,16 @@ def is_short_link(url: str) -> bool:
     host = _host_of(u)
     if not host:
         return False
+    # 手淘详情页（已带 id /iXXXX.htm）无需再展开
+    if host in (
+        "a.m.taobao.com",
+        "h5.m.taobao.com",
+        "market.m.taobao.com",
+    ) or host.endswith(".m.taobao.com"):
+        if extract_taobao_id(u):
+            return False
+        # a.m.taobao.com without id may still be an intermediate share hop
+        return host == "a.m.taobao.com"
     short_exact = {
         "3.cn",
         "m.tb.cn",
@@ -365,7 +380,6 @@ def is_short_link(url: str) -> bool:
         "u.jd.com",
         "3.jd.com",
         "3.jd.hk",
-        "a.m.taobao.com",
         "p.pinduoduo.com",
         "s.click.taobao.com",
     }
@@ -651,7 +665,7 @@ def extract_url_from_html(html: str, *, base_url: str = "") -> Optional[str]:
 
     # 5. first link to known item hosts
     item_link = re.search(
-        r"""https?://(?:item\.taobao\.com|detail\.tmall\.com|h5\.m\.taobao\.com|item\.jd\.com|item\.m\.jd\.com|mitem\.jd\.hk|npcitem\.jd\.hk|item\.jd\.hk|detail\.tmall\.hk)[^\s"'<>\\]+""",
+        r"""https?://(?:item\.taobao\.com|detail\.tmall\.com|h5\.m\.taobao\.com|a\.m\.taobao\.com|market\.m\.taobao\.com|item\.jd\.com|item\.m\.jd\.com|mitem\.jd\.hk|npcitem\.jd\.hk|item\.jd\.hk|detail\.tmall\.hk)[^\s"'<>\\]+""",
         body,
         re.I,
     )
@@ -836,7 +850,7 @@ async def resolve_url(url: str) -> str:
             host = _host_of(current)
             if "tmall" in host:
                 return f"https://detail.tmall.com/item.htm?id={tid}"
-            # h5.m.taobao.com / item.taobao.com / others → desktop item
+            # h5 / a.m / market / item.taobao → stable desktop canonical with id=
             return f"https://item.taobao.com/item.htm?id={tid}"
 
     final = strip_url_trailing_junk(current)

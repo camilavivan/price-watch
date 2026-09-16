@@ -8,6 +8,8 @@ export type HistoryStats = {
   avg: number | null;
   is_history_low: boolean;
   sparkline?: string;
+  source?: string;
+  source_label?: string;
 };
 
 export type Watch = {
@@ -115,8 +117,18 @@ export async function getHistory(
   openid: string,
   id: number,
   limit = 10,
-): Promise<{ history: HistoryPoint[]; history_stats?: HistoryStats | null }> {
-  const data = await request<{ history: HistoryPoint[]; history_stats?: HistoryStats }>(
+): Promise<{
+  history: HistoryPoint[];
+  history_stats?: HistoryStats | null;
+  external_history?: HistoryPoint[];
+  history_source?: string;
+}> {
+  const data = await request<{
+    history: HistoryPoint[];
+    history_stats?: HistoryStats;
+    external_history?: HistoryPoint[];
+    history_source?: string;
+  }>(
     cfg,
     'GET',
     `/api/bot/watches/${id}/history?openid=${encodeURIComponent(openid)}&limit=${limit}`,
@@ -124,6 +136,8 @@ export async function getHistory(
   return {
     history: data.history || [],
     history_stats: data.history_stats ?? null,
+    external_history: data.external_history || [],
+    history_source: data.history_source,
   };
 }
 

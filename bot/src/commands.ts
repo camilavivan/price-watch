@@ -14,14 +14,14 @@ const HELP = `【到手价监控】命令
 监控 <商品链接> [目标价] — 添加监控（自动识别京东/淘宝/拼多多并归一化链接）
 列表 — 查看我的监控
 取消 <id> — 删除我的监控
-历史 <id> — 近期到手价 + 自采统计/走势
+历史 <id> — 近期到手价 + 历史统计/走势（优先慢慢买，失败则本地自采）
 详情 <id> — 链接与到手价明细（也可写「详请」）
 填价 <id> <到手价> — 手动设到手价（标价=到手价，税费=0）；别名：改价 / 手动价
 填价 <id> <标价> <税费> — 手动设标价+税费，到手价=标价+税费−券−满减
 
-说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/粉丝福利购等），机器人会自动提取链接。
+说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/手淘 h5·a.m / 粉丝福利购等），机器人会自动提取链接。
 云服务器上京东全球购/jd.hk 常被风控拦截，自动取价失败时请用「填价」。
-告警只推送给添加监控的你本人。历史最低来自本机自采记录（非第三方）。`;
+告警只推送给添加监控的你本人。历史走势优先慢慢买（非官方，可能失败），本地自采作兜底。`;
 
 const PLATFORM: Record<string, string> = {
   jd: '京东',
@@ -34,7 +34,7 @@ const TRAILING_URL_JUNK = /[）)」』】"'“”‘’。，、！？!?,.;:\]\}
 
 /** Known commerce / short-link hosts (jd / taobao|tmall / pdd) */
 const COMMERCE_HOST_RE =
-  /(?:^|\.)(?:(?:\d+\.)?jd\.hk|jd\.com|u\.jd\.com|3\.cn|(?:m\.|e\.|s\.)?tb\.cn|a\.m\.taobao\.com|taobao\.com|tmall\.com|tmall\.hk|pinduoduo\.com|yangkeduo\.com)$/i;
+  /(?:^|\.)(?:(?:\d+\.)?jd\.hk|jd\.com|u\.jd\.com|3\.cn|(?:m\.|e\.|s\.)?tb\.cn|a\.m\.taobao\.com|h5\.m\.taobao\.com|market\.m\.taobao\.com|taobao\.com|tmall\.com|tmall\.hk|pinduoduo\.com|yangkeduo\.com)$/i;
 
 function fmtPrice(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '—';
@@ -44,8 +44,13 @@ function fmtPrice(v: number | null | undefined): string {
 function fmtStats(s: HistoryStats | null | undefined): string {
   if (!s || !s.count) return '';
   const lowTag = s.is_history_low ? '是 · 历史新低' : '否';
+  const src =
+    s.source_label ||
+    (s.source === 'manmanbuy' ? '来源：慢慢买' : '来源：本地自采');
+  const scope = s.source === 'manmanbuy' ? '历史' : '自采';
   const lines = [
-    `近${s.days}天自采：最低 ${fmtPrice(s.lowest)} / 均价 ${fmtPrice(s.avg)} / 最高 ${fmtPrice(s.highest)}（${s.count}点）`,
+    `近${s.days}天${scope}：最低 ${fmtPrice(s.lowest)} / 均价 ${fmtPrice(s.avg)} / 最高 ${fmtPrice(s.highest)}（${s.count}点）`,
+    src,
     `是否历史新低：${lowTag}`,
   ];
   if (s.sparkline) lines.push(`走势：${s.sparkline}`);
@@ -100,7 +105,7 @@ export function extractBestUrl(text: string): string | null {
     try {
       const host = new URL(url).hostname.toLowerCase();
       if (
-        /(?:^|\.)(?:m\.tb\.cn|tb\.cn|e\.tb\.cn|s\.tb\.cn|u\.jd\.com|3\.jd\.com|3\.jd\.hk|3\.cn|p\.pinduoduo\.com)$/i.test(
+        /(?:^|\.)(?:m\.tb\.cn|tb\.cn|e\.tb\.cn|s\.tb\.cn|a\.m\.taobao\.com|h5\.m\.taobao\.com|u\.jd\.com|3\.jd\.com|3\.jd\.hk|3\.cn|p\.pinduoduo\.com)$/i.test(
           host,
         ) ||
         host.endsWith('.tb.cn')
@@ -307,17 +312,27 @@ export async function handleCommand(
   if (m) {
     const id = Number(m[1]);
     try {
-      const { history: hist, history_stats: stats } = await getHistory(cfg, openid, id, 12);
-      if (!hist.length) return { text: `#${id} 暂无价格历史（多抓几次后会出现自采统计）` };
-      const lines = hist.map((h) => {
+      const {
+        history: hist,
+        history_stats: stats,
+        external_history: extHist,
+        history_source: histSrc,
+      } = await getHistory(cfg, openid, id, 12);
+      const useExt = histSrc === 'manmanbuy' && extHist && extHist.length > 0;
+      const points = useExt ? extHist! : hist;
+      if (!points.length && !(stats && stats.count)) {
+        return { text: `#${id} 暂无价格历史（慢慢买不可用且尚无本地自采；多抓几次或稍后再试）` };
+      }
+      const label = useExt ? '近期到手价（慢慢买）' : '近期到手价（本地自采）';
+      const lines = points.map((h) => {
         const t = h.recorded_at ? h.recorded_at.replace('T', ' ').slice(0, 16) : '?';
         return `${t}  ${fmtPrice(h.landing_price)}`;
       });
       const statsBlock = fmtStats(stats);
       return {
         text:
-          `#${id} 近期到手价（自采）\n` +
-          lines.join('\n') +
+          `#${id} ${label}\n` +
+          (lines.length ? lines.join('\n') : '（无逐点列表）') +
           (statsBlock ? `\n\n${statsBlock}` : ''),
       };
     } catch (e) {
