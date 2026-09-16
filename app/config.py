@@ -13,6 +13,20 @@ from pydantic import BaseModel, Field
 class SchedulerConfig(BaseModel):
     defaultIntervalMinutes: int = 60
     startupDelaySeconds: int = 10
+    # When needs_manual + risk-block last_error, skip auto fetch for this many hours
+    manualRiskBackoffHours: float = 12
+
+
+class PlaywrightConfig(BaseModel):
+    """Optional Chromium fetch for JD risk/SPA pages (requires playwright install)."""
+    enabled: bool = False
+    headless: bool = True
+    storageStatePath: str = "./data/browser/jd_storage.json"
+    userDataDir: str = "./data/browser/profile"
+    loginScreenshotPath: str = "./data/browser/login.png"
+    timeoutMs: int = 45000
+    # Navigate candidates for jd.hk / haitao
+    preferMobile: bool = True
 
 
 class FetchConfig(BaseModel):
@@ -20,6 +34,7 @@ class FetchConfig(BaseModel):
     rateLimitSeconds: float = 1.5
     # Ignore drop alerts when relative change is within this noise band (MarketEye-inspired)
     priceNoisePercent: float = 0.5
+    playwright: PlaywrightConfig = Field(default_factory=PlaywrightConfig)
 
 
 class AlertsConfig(BaseModel):

@@ -45,8 +45,17 @@ class WatchCreate(BaseModel):
     openid: str = Field(..., min_length=1)
     url: str = Field(..., min_length=4)
     target_price: Optional[float] = None
+    # Explicit current landing from「监控 url 当前价 [目标价]」
+    current_price: Optional[float] = None
+    # Single trailing number: if auto landing missing → current; else → target
+    trailing_price: Optional[float] = None
     name: Optional[str] = None
     platform: Optional[str] = None
+
+
+class WatchTargetUpdate(BaseModel):
+    openid: str = Field(..., min_length=1)
+    target_price: float = Field(..., ge=0)
 
 
 class WatchPriceUpdate(BaseModel):
@@ -87,6 +96,12 @@ def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, An
     }
     if history_stats is not None:
         data["history_stats"] = history_stats
+    return data
+
+
+def _serialize_create(p: Product, *, used_manual_current: bool = False) -> dict[str, Any]:
+    data = _serialize(p)
+    data["used_manual_current"] = bool(used_manual_current)
     return data
 
 
@@ -282,7 +297,43 @@ async def create_watch(
     except Exception as e:
         logger.warning("initial check failed for %s: %s", product.id, e)
 
-    return {"watch": _serialize(product)}
+    used_manual_current = False
+    current = body.current_price
+    trailing = body.trailing_price
+    target = body.target_price
+
+    # Resolve single trailing number after auto fetch
+    if trailing is not None and current is None and target is None:
+        if product.landing_price is None:
+            current = trailing
+        else:
+            target = trailing
+
+    if target is not None:
+        product.target_price = float(target)
+
+    # Use user current when auto empty (tax 0)
+    if current is not None and product.landing_price is None:
+        if current < 0:
+            raise HTTPException(status_code=400, detail="当前到手价不能为负")
+        lp = float(current)
+        await apply_price_update(
+            db,
+            product,
+            list_price=lp,
+            tax_amount=0.0,
+            landing_price=lp,
+            source="manual",
+            send_alert=False,
+        )
+        used_manual_current = True
+        await db.refresh(product)
+    elif target is not None:
+        # Persist target-only change if we did not apply_price_update
+        await db.commit()
+        await db.refresh(product)
+
+    return {"watch": _serialize_create(product, used_manual_current=used_manual_current)}
 
 
 @router.get("/watches/{watch_id}")
@@ -387,6 +438,41 @@ async def watch_history(
         "external_history": external_history,
         "history_source": stats.get("source", "local"),
     }
+
+
+@router.post("/watches/{watch_id}/target")
+@router.patch("/watches/{watch_id}/target")
+async def update_watch_target(
+    watch_id: int,
+    body: WatchTargetUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """QQ「目标」— set target_price only."""
+    openid = body.openid.strip()
+    product = await db.get(Product, watch_id)
+    if not product or product.owner_openid != openid:
+        raise HTTPException(status_code=404, detail="监控不存在或不属于你")
+    product.target_price = float(body.target_price)
+    await db.commit()
+    await db.refresh(product)
+    return {"watch": _serialize(product)}
+
+
+@router.get("/browser/jd-status")
+async def browser_jd_status(_: None = Depends(_require_admin_token)):
+    """QQ「登录状态」— Playwright / JD cookie hint (no secrets)."""
+    try:
+        from app.browser.jd_session import status_dict
+
+        return status_dict()
+    except Exception as e:
+        logger.warning("browser status failed: %s", e)
+        return {
+            "playwright_enabled": False,
+            "has_storage_state": False,
+            "message": f"browser module unavailable: {e}",
+        }
 
 
 @router.post("/watches/{watch_id}/price")

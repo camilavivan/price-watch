@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}京东浏览器登录 — 到手价监控{% endblock %}
+{% block content %}
+<h1>京东 Playwright 登录</h1>
+<p class="muted">
+  云 VPS 上京东海淘常被风控。完成一次扫码登录后，自动取价可走 Chromium + 已保存的 Cookie
+  （<code>data/browser/jd_storage.json</code>）。失败时仍可用 QQ「填价」。
+</p>
+
+{% if message %}
+<div class="card" style="border-left:4px solid #3b82f6;margin-bottom:1rem;">{{ message }}</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0;">状态</h2>
+  <ul>
+    <li>Playwright 启用：{% if status.playwright_enabled %}<span class="badge">是</span>{% else %}<span class="badge off">否（请在 config.yaml 设 fetch.playwright.enabled: true）</span>{% endif %}</li>
+    <li>storage_state：{% if status.has_storage_state %}<span class="badge">已有</span>{% else %}<span class="badge off">无</span>{% endif %}</li>
+    <li>登录线索：{% if status.jd_logged_in_hint %}<span class="badge">疑似已登录</span>{% else %}<span class="badge off">未检测到</span>{% endif %}</li>
+    <li>路径：<code>{{ status.storage_path }}</code></li>
+    {% if status.message %}<li class="muted">{{ status.message }}</li>{% endif %}
+    {% if status.cookie_names %}<li>Cookie：{{ status.cookie_names|join(', ') }}</li>{% endif %}
+  </ul>
+
+  <div class="row" style="gap:0.5rem;flex-wrap:wrap;">
+    <form method="post" action="/browser/jd/start" style="display:inline;">
+      <button class="btn" type="submit">开始登录（截图扫码）</button>
+    </form>
+    <form method="post" action="/browser/jd/refresh" style="display:inline;">
+      <button class="btn secondary" type="submit">刷新状态</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:1rem;">
+  <h2 style="margin-top:0;">登录截图</h2>
+  {% if has_screenshot %}
+  <p class="muted">用京东 App 扫码；完成后点「刷新状态」。截图约每几秒更新。</p>
+  <img src="{{ screenshot_url }}" alt="login QR" style="max-width:100%;border:1px solid #ddd;border-radius:8px;" />
+  {% else %}
+  <p class="muted">尚无截图。点击「开始登录」，或在容器内执行：</p>
+  <pre>python -m app.browser_login jd</pre>
+  {% endif %}
+</div>
+
+<p class="muted" style="margin-top:1rem;">
+  CLI 亦可：<code>docker compose exec app python -m app.browser_login jd --wait 300</code>
+</p>
+{% endblock %}

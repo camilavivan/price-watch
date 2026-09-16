@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import desc, select
@@ -135,6 +135,98 @@ async def index(request: Request, db: AsyncSession = Depends(get_db)):
     return templates.TemplateResponse(
         "index.html",
         _ctx(request, products=products, adapter_info=ADAPTERS),
+    )
+
+
+@app.get("/browser/jd", response_class=HTMLResponse)
+async def browser_jd_page(request: Request):
+    """京东 Playwright 登录：展示截图 + 状态，确认保存 storage_state。"""
+    from app.browser.jd_session import (
+        ensure_browser_dirs,
+        login_screenshot_path,
+        status_dict,
+    )
+
+    ensure_browser_dirs()
+    st = status_dict()
+    shot = login_screenshot_path()
+    return templates.TemplateResponse(
+        "browser_jd.html",
+        _ctx(
+            request,
+            status=st,
+            has_screenshot=shot.is_file(),
+            screenshot_url="/browser/jd/screenshot" if shot.is_file() else None,
+            message=None,
+        ),
+    )
+
+
+@app.get("/browser/jd/screenshot")
+async def browser_jd_screenshot():
+    from app.browser.jd_session import login_screenshot_path
+
+    shot = login_screenshot_path()
+    if not shot.is_file():
+        return JSONResponse({"detail": "no screenshot"}, status_code=404)
+    return FileResponse(str(shot), media_type="image/png")
+
+
+@app.post("/browser/jd/start")
+async def browser_jd_start(request: Request):
+    """Kick off background login screenshot session (short wait)."""
+    import asyncio
+
+    from app.browser.jd_session import ensure_browser_dirs, status_dict
+
+    ensure_browser_dirs()
+
+    async def _run():
+        try:
+            from app.browser_login import run_jd_login
+
+            # Short wait for Web flow; user can re-click / use CLI for longer
+            await run_jd_login(headed=False, wait_seconds=120)
+        except Exception as e:
+            logger.exception("browser login job failed: %s", e)
+
+    asyncio.create_task(_run())
+    st = status_dict()
+    from app.browser.jd_session import login_screenshot_path
+
+    shot = login_screenshot_path()
+    return templates.TemplateResponse(
+        "browser_jd.html",
+        _ctx(
+            request,
+            status=st,
+            has_screenshot=shot.is_file(),
+            screenshot_url="/browser/jd/screenshot" if shot.is_file() else None,
+            message="已在后台启动登录会话（约 2 分钟）。请扫码后点「刷新状态」；也可在容器内运行：python -m app.browser_login jd",
+        ),
+    )
+
+
+@app.post("/browser/jd/refresh")
+async def browser_jd_refresh(request: Request):
+    from app.browser.jd_session import (
+        ensure_browser_dirs,
+        login_screenshot_path,
+        status_dict,
+    )
+
+    ensure_browser_dirs()
+    st = status_dict()
+    shot = login_screenshot_path()
+    return templates.TemplateResponse(
+        "browser_jd.html",
+        _ctx(
+            request,
+            status=st,
+            has_screenshot=shot.is_file(),
+            screenshot_url="/browser/jd/screenshot" if shot.is_file() else None,
+            message="已刷新状态",
+        ),
     )
 
 

@@ -3,25 +3,31 @@ import type { HistoryStats } from './api.js';
 import {
   createWatch,
   deleteWatch,
+  getBrowserLoginStatus,
   getHistory,
   getWatch,
   listWatches,
   updateWatchPrice,
+  updateWatchTarget,
 } from './api.js';
 
 const HELP = `【到手价监控】命令
 帮助 — 显示本说明
-监控 <商品链接> [目标价] — 添加监控（自动识别京东/淘宝/拼多多并归一化链接）
+监控 <商品链接> [当前到手价] [目标价] — 添加监控
+  · 自动取价失败时可带当前到手价，一条消息建好监控
+  · 两个数字：当前价 目标价；一个数字：有自动价则当目标，否则当当前价
 列表 — 查看我的监控
 取消 <id> — 删除我的监控
 历史 <id> — 近期到手价 + 历史统计/走势（优先慢慢买，失败则本地自采）
 详情 <id> — 链接与到手价明细（也可写「详请」）
 填价 <id> <到手价> — 手动设到手价（标价=到手价，税费=0）；别名：改价 / 手动价
 填价 <id> <标价> <税费> — 手动设标价+税费，到手价=标价+税费−券−满减
+目标 <id> <价格> — 只设置/修改目标价
+登录状态 — 查看京东浏览器登录（Playwright）是否可用
 
 说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/手淘 h5·a.m / 粉丝福利购等），机器人会自动提取链接。
-云服务器上京东全球购/jd.hk 常被风控拦截，自动取价失败时请用「填价」。
-告警只推送给添加监控的你本人。历史走势优先慢慢买（非官方，可能失败），本地自采作兜底。`;
+云服务器上京东全球购/jd.hk 常被风控拦截；取不到价时请在「监控」时带上当前到手价，或事后「填价」。
+告警只推送给添加监控的你本人。历史走势优先慢慢买（非官方，VPS 常 402/403），本地自采作兜底。`;
 
 const PLATFORM: Record<string, string> = {
   jd: '京东',
@@ -160,32 +166,75 @@ function hasWatchKeyword(text: string): boolean {
   return /监控|盯价|加监控/.test(text);
 }
 
-/** Optional target: 目标/目标价, or number right after URL when 监控-style. */
-export function extractTargetPrice(text: string, url?: string | null): number | undefined {
-  let m = text.match(/目标价?\s*[：:=\s]*(\d+(?:\.\d+)?)/);
-  if (m) return Number(m[1]);
+export type CreatePrices = {
+  /** Explicit current landing when two numbers or labeled */
+  current?: number;
+  /** Explicit target */
+  target?: number;
+  /**
+   * Single trailing number after URL — server decides:
+   * auto landing present → target; else → current.
+   */
+  trailing?: number;
+};
 
+/**
+ * Parse current / target / trailing prices from create / share-paste text.
+ * - Two numbers after URL → current then target
+ * - One number → trailing (ambiguous until auto-fetch result)
+ * - 「目标价 xx」 alone → target
+ */
+export function extractCreatePrices(text: string, url?: string | null): CreatePrices {
+  const out: CreatePrices = {};
+  let targetKw: number | undefined;
+  const kw = text.match(/目标价?\s*[：:=\s]*(\d+(?:\.\d+)?)/);
+  if (kw) targetKw = Number(kw[1]);
+
+  const nums: number[] = [];
   if (url) {
     const idx = text.indexOf(url);
     if (idx >= 0) {
       const after = text.slice(idx + url.length);
-      m = after.match(/^\s+(\d+(?:\.\d+)?)\s*元?\s*$/);
-      if (m) return Number(m[1]);
-      // Single trailing number on same/next fragment when keyword present
-      if (hasWatchKeyword(text)) {
-        m = after.match(/^\s+(\d+(?:\.\d+)?)\s*元?(?:\s|$)/);
-        if (m) return Number(m[1]);
+      // Collect up to 2 plain numbers (ignore 目标价 keyword number via separate path)
+      const stripped = after.replace(/目标价?\s*[：:=\s]*\d+(?:\.\d+)?/g, ' ');
+      for (const m of stripped.matchAll(/(\d+(?:\.\d+)?)\s*元?/g)) {
+        const n = Number(m[1]);
+        if (Number.isFinite(n) && n >= 0) nums.push(n);
+        if (nums.length >= 2) break;
       }
     }
   }
+  if (!nums.length) {
+    const m = text.match(
+      /(?:监控|盯价|加监控)\s+\S+(?:\s+(\d+(?:\.\d+)?))?(?:\s+(\d+(?:\.\d+)?))?\s*$/,
+    );
+    if (m?.[1]) nums.push(Number(m[1]));
+    if (m?.[2]) nums.push(Number(m[2]));
+  }
 
-  // Classic clean command: 监控 <url> <price>
-  m = text.match(/(?:监控|盯价|加监控)\s+\S+\s+(\d+(?:\.\d+)?)\s*元?\s*$/);
-  if (m) return Number(m[1]);
-
-  return undefined;
+  if (nums.length >= 2) {
+    out.current = nums[0];
+    out.target = nums[1];
+  } else if (nums.length === 1) {
+    if (targetKw != null && Math.abs(nums[0] - targetKw) < 1e-9) {
+      out.target = targetKw;
+    } else if (targetKw != null) {
+      out.current = nums[0];
+      out.target = targetKw;
+    } else {
+      out.trailing = nums[0];
+    }
+  } else if (targetKw != null) {
+    out.target = targetKw;
+  }
+  return out;
 }
 
+/** @deprecated use extractCreatePrices; kept for older call sites */
+export function extractTargetPrice(text: string, url?: string | null): number | undefined {
+  const p = extractCreatePrices(text, url);
+  return p.target ?? p.trailing;
+}
 
 /** Parse 填价/改价/手动价 command. Exported for unit tests. */
 export type FillPriceParsed =
@@ -208,18 +257,49 @@ export function parseFillPriceCommand(text: string): FillPriceParsed | null {
   return { id, mode: 'landing', landing: a };
 }
 
+/** Parse 目标 <id> <price> */
+export function parseTargetCommand(
+  text: string,
+): { id: number; target: number } | null {
+  const m = text.trim().match(/^目标\s+#?(\d+)\s+(\d+(?:\.\d+)?)\s*元?\s*$/);
+  if (!m) return null;
+  const id = Number(m[1]);
+  const target = Number(m[2]);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(target) || target < 0) return null;
+  return { id, target };
+}
+
+function createReplyNoLanding(w: {
+  id: number;
+  last_error?: string | null;
+}): string {
+  const err = w.last_error || '';
+  const blocked = /反爬|风控|拦截|无内嵌价格|京东验证/.test(err);
+  const reason = blocked ? '京东拦截' : err ? '自动取价失败' : '暂无价格';
+  return (
+    `到手价：—（自动取价失败：${reason}）\n` +
+    `请立刻发送：填价 ${w.id} <你看到的到手价>\n` +
+    `设好价格后才会按目标价/降幅告警；云主机暂无法自动刷新京东海淘价。`
+  );
+}
+
 async function doCreateWatch(
   cfg: BotConfig,
   openid: string,
   url: string,
-  target?: number,
+  prices: CreatePrices,
   name?: string,
 ): Promise<CommandResult> {
   if (!/^https?:\/\//i.test(url)) {
     return { text: '请提供以 http(s):// 开头的商品链接' };
   }
   try {
-    const w = await createWatch(cfg, openid, url, target, name);
+    const w = await createWatch(cfg, openid, url, {
+      currentPrice: prices.current,
+      targetPrice: prices.target,
+      trailingPrice: prices.trailing,
+      name,
+    });
     const placeholder = /^(京东商品|淘宝商品|拼多多商品)/.test(w.name || '');
     const hint = placeholder
       ? '\n提示：暂未解析到商品标题，将在下次检查时重试。'
@@ -228,30 +308,32 @@ async function doCreateWatch(
       w.tax_amount != null && Number(w.tax_amount) > 0
         ? `税费：${fmtPrice(w.tax_amount)}\n`
         : '';
+
+    let priceBlock: string;
+    if (w.landing_price != null) {
+      const usedManual = Boolean(w.used_manual_current);
+      priceBlock =
+        `到手价：${fmtPrice(w.landing_price)}` +
+        (usedManual ? '（已用你填写的价格建监控）' : '') +
+        `\n目标价：${fmtPrice(w.target_price)}\n` +
+        (usedManual
+          ? '已用你填写的价格建监控；之后可用「填价」更新、「目标」改目标价。'
+          : w.needs_manual
+            ? '自动取价不完整，已保留当前价；可用「填价」更新。'
+            : '已尝试拉取价格。');
+    } else {
+      priceBlock =
+        createReplyNoLanding(w) +
+        `\n目标价：${fmtPrice(w.target_price)}`;
+    }
+
     return {
       text:
         `已添加监控 #${w.id}\n` +
         `${w.name}\n` +
         `平台：${PLATFORM[w.platform] || w.platform}\n` +
         taxLine +
-        `到手价：${fmtPrice(w.landing_price)}\n` +
-        `目标价：${fmtPrice(w.target_price)}\n` +
-        (w.needs_manual
-          ? (() => {
-              const err = w.last_error || '';
-              const blocked = /反爬|风控|拦截|无内嵌价格/.test(err);
-              if (blocked) {
-                return (
-                  `自动取价被京东拦截。请发：填价 ${w.id} <到手价>` +
-                  ` 或 填价 ${w.id} <标价> <税费>`
-                );
-              }
-              if (err) {
-                return `提示：自动取价失败。可用：填价 ${w.id} <到手价>`;
-              }
-              return `提示：该平台可能需手动填价。可用：填价 ${w.id} <到手价>`;
-            })()
-          : '已尝试拉取价格。') +
+        priceBlock +
         hint,
       imageUrl: w.image_url,
     };
@@ -280,7 +362,10 @@ export async function handleCommand(
   if (text === '列表' || text === 'list') {
     const watches = await listWatches(cfg, openid);
     if (!watches.length) {
-      return { text: '你还没有监控。发送：监控 <商品链接> [目标价]，或直接粘贴带链接的分享文案' };
+      return {
+        text:
+          '你还没有监控。发送：监控 <商品链接> [当前到手价] [目标价]，或直接粘贴带链接的分享文案',
+      };
     }
     const lines = watches.map((w) => {
       const plat = PLATFORM[w.platform] || w.platform;
@@ -289,12 +374,39 @@ export async function handleCommand(
     return { text: `你的监控（${watches.length}）\n` + lines.join('\n') };
   }
 
+  if (text === '登录状态' || text === '登陆状态') {
+    try {
+      const st = await getBrowserLoginStatus(cfg);
+      if (!st.playwright_enabled) {
+        return {
+          text:
+            'Playwright 未启用（config fetch.playwright.enabled=false）。\n' +
+            '启用并完成 Web「浏览器登录」后，京东风控页可尝试自动取价；否则请继续用「填价」。',
+        };
+      }
+      const ok = st.jd_logged_in_hint || st.has_storage_state;
+      return {
+        text:
+          `Playwright：已启用\n` +
+          `登录态：${ok ? '已检测到存储（可能可用）' : '未登录 / 无 storage_state'}\n` +
+          (st.cookie_names?.length
+            ? `Cookie 线索：${st.cookie_names.slice(0, 8).join(', ')}\n`
+            : '') +
+          (st.message ? `${st.message}\n` : '') +
+          `路径：${st.storage_path || '—'}\n` +
+          `未登录时请打开 Web 管理页「浏览器登录」，或：python -m app.browser_login jd`,
+      };
+    } catch (e) {
+      return { text: `查询失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
   // Watch: keyword + URL, or bare commerce URL (share paste)
   const url = extractBestUrl(text) || extractFirstUrl(text);
   if (url && (hasWatchKeyword(text) || isCommerceUrl(url))) {
-    const target = extractTargetPrice(text, url);
+    const prices = extractCreatePrices(text, url);
     const name = extractTitleHint(text);
-    return doCreateWatch(cfg, openid, url, target, name);
+    return doCreateWatch(cfg, openid, url, prices, name);
   }
 
   let m = text.match(/^取消\s+(\d+)$/);
@@ -369,6 +481,26 @@ export async function handleCommand(
   }
 
   {
+    const tgt = parseTargetCommand(text);
+    if (tgt) {
+      try {
+        const w = await updateWatchTarget(cfg, openid, tgt.id, tgt.target);
+        return {
+          text:
+            `已设置 #${w.id} 目标价 ${fmtPrice(w.target_price)}\n` +
+            `${w.name}\n` +
+            `当前到手价：${fmtPrice(w.landing_price)}` +
+            (w.landing_price == null
+              ? `\n（尚无到手价，请先：填价 ${w.id} <到手价>）`
+              : ''),
+        };
+      } catch (e) {
+        return { text: `设置目标价失败：${e instanceof Error ? e.message : String(e)}` };
+      }
+    }
+  }
+
+  {
     const fill = parseFillPriceCommand(text);
     if (fill) {
       try {
@@ -393,7 +525,8 @@ export async function handleCommand(
             `${w.name}\n` +
             `标价：${fmtPrice(w.list_price)}\n` +
             taxLine +
-            `到手价：${fmtPrice(w.landing_price)}`,
+            `到手价：${fmtPrice(w.landing_price)}\n` +
+            `目标价：${fmtPrice(w.target_price)}`,
           imageUrl: w.image_url,
         };
       } catch (e) {

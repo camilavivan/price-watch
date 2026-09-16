@@ -13,6 +13,7 @@
       <nav class="nav">
         <a href="/">商品列表</a>
         <a href="/products/new">添加商品</a>
+        <a href="/browser/jd">浏览器登录</a>
         {% if auth_required %}
           {% if authed %}<a href="/logout">退出</a>{% else %}<a href="/login">登录</a>{% endif %}
         {% endif %}

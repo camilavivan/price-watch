@@ -17,6 +17,28 @@ from app.notifiers import notify_all
 
 logger = logging.getLogger(__name__)
 
+def is_risk_block_error(err: Optional[str]) -> bool:
+    """True when last_error indicates JD/datacenter block — schedule should back off."""
+    if not err:
+        return False
+    return bool(
+        any(
+            k in err
+            for k in (
+                "反爬",
+                "风控",
+                "拦截",
+                "京东验证",
+                "无内嵌价格",
+                "risk_handler",
+                "402",
+                "403",
+            )
+        )
+    )
+
+
+
 PLATFORM_LABEL = {"jd": "京东", "taobao": "淘宝/天猫", "pdd": "拼多多"}
 _SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
@@ -490,6 +512,10 @@ async def check_product(session: AsyncSession, product: Product) -> dict:
 async def check_due_products(session: AsyncSession) -> list[dict]:
     cfg = get_config()
     default_interval = cfg.scheduler.defaultIntervalMinutes
+    # Risk-blocked needs_manual: skip auto fetch for N hours (avoid spamming JD)
+    risk_backoff_hours = float(
+        getattr(cfg.scheduler, "manualRiskBackoffHours", 12) or 12
+    )
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     q = await session.execute(select(Product).where(Product.enabled.is_(True)))
     products = list(q.scalars().all())
@@ -497,9 +523,24 @@ async def check_due_products(session: AsyncSession) -> list[dict]:
     for p in products:
         interval = p.check_interval_minutes or default_interval
         if p.last_check_at is not None:
-            elapsed = (now - p.last_check_at).total_seconds() / 60
-            if elapsed < interval:
+            elapsed_min = (now - p.last_check_at).total_seconds() / 60
+            if elapsed_min < interval:
                 continue
+            # Extra backoff for risk-blocked items (even if interval already elapsed)
+            if (
+                p.needs_manual
+                and is_risk_block_error(p.last_error)
+                and risk_backoff_hours > 0
+            ):
+                elapsed_h = (now - p.last_check_at).total_seconds() / 3600
+                if elapsed_h < risk_backoff_hours:
+                    logger.debug(
+                        "skip risk-backoff id=%s elapsed_h=%.1f < %.1f",
+                        p.id,
+                        elapsed_h,
+                        risk_backoff_hours,
+                    )
+                    continue
         try:
             r = await check_product(session, p)
             results.append(r)

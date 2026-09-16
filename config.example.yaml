@@ -18,11 +18,22 @@ web:
 scheduler:
   defaultIntervalMinutes: 60
   startupDelaySeconds: 10
+  # needs_manual + 风控类 last_error 时，跳过自动抓取的小时数（防刷京东）
+  manualRiskBackoffHours: 12
 
 # 抓取礼貌限速（平台 adapter 请求之间）
 fetch:
   rateLimitSeconds: 1.5
   priceNoisePercent: 0.5   # 小于该幅度的波动不触发「较上次下降」类告警
+  # 可选：Playwright 浏览器取价（京东风控/SPA；需镜像安装 chromium，体积显著增大）
+  playwright:
+    enabled: false
+    headless: true
+    storageStatePath: "./data/browser/jd_storage.json"
+    userDataDir: "./data/browser/profile"
+    loginScreenshotPath: "./data/browser/login.png"
+    timeoutMs: 45000
+    preferMobile: true
 
 # 到手价告警默认规则（商品可覆盖）
 alerts:
@@ -41,7 +52,7 @@ history:
   external: manmanbuy   # manmanbuy | none
   cacheSeconds: 3600
   rateLimitSeconds: 2.0
-  # 京东/淘宝自动取价失败时，用慢慢买最新点作软参考价（仍可用「填价」覆盖）
+  # 京东/淘宝自动取价失败时，用慢慢买最新点作软参考价（VPS 常返回 402/403 则跳过；仍可用「填价」覆盖）
   softPriceHint: true
   softPriceHintPlatforms: ["jd", "taobao"]
 

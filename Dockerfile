@@ -52,6 +52,12 @@ RUN pip install --upgrade pip \
     --default-timeout=120 \
     -r requirements.txt
 
+# Playwright Chromium for optional JD browser fetch (~+300MB+).
+# Enable with fetch.playwright.enabled: true after Web「浏览器登录」or
+#   python -m app.browser_login jd
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN playwright install --with-deps chromium
+
 # Clear build-time proxy so runtime requests are not forced through it
 ENV HTTP_PROXY= HTTPS_PROXY= http_proxy= https_proxy=
 
@@ -65,7 +71,7 @@ COPY --from=bot-build /bot/package.json /app/bot/package.json
 COPY --from=bot-build /bot/node_modules /app/bot/node_modules
 COPY --from=bot-build /bot/dist /app/bot/dist
 
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data /app/data/browser /ms-playwright
 
 ENV PYTHONUNBUFFERED=1 \
     NODE_ENV=production \

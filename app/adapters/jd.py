@@ -773,6 +773,41 @@ class JDAdapter:
                 raw_note=note or "京东价格解析",
             )
 
+        # 4) Optional Playwright (logged-in Chromium) when HTTP hit risk/SPA
+        if saw_risk or saw_spa or list_price is None:
+            try:
+                from app.browser.jd_playwright import fetch_jd_with_playwright
+                from app.browser.jd_session import playwright_enabled
+
+                if playwright_enabled():
+                    tried.append("playwright")
+                    pw = await fetch_jd_with_playwright(sku, preferred)
+                    if pw and pw.get("list_price"):
+                        list_price = float(pw["list_price"])
+                        tax_amount = float(pw.get("tax_amount") or 0)
+                        if pw.get("title") and (
+                            not title or str(title).startswith("京东商品")
+                        ):
+                            title = str(pw["title"])
+                        note = str(pw.get("note") or "playwright")
+                        logger.info(
+                            "JD playwright ok sku=%s price=%s tax=%s",
+                            sku,
+                            list_price,
+                            tax_amount,
+                        )
+                        return FetchResult(
+                            ok=True,
+                            list_price=list_price,
+                            tax_amount=tax_amount,
+                            title=title,
+                            image_url=image_url,
+                            needs_manual=False,
+                            raw_note=note,
+                        )
+            except Exception as e:
+                logger.warning("JD playwright soft-fail sku=%s: %s", sku, e)
+
         tried_s = "、".join(dict.fromkeys(tried))  # preserve order, unique
         if saw_risk or saw_spa:
             extra = []

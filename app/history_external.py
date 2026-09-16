@@ -4,7 +4,7 @@ Patterns adapted from public open-source references (ideas only, not copied
 verbatim): PPsteven/manmanbuy_js_crack, zhangbincheng1997/mall-monitor,
 hamflx gist (京东历史价格插件).
 
-Unofficial third-party endpoint — may return 403 / captcha; soft-fail only.
+Unofficial third-party endpoint — may return 402 / 403 / captcha; soft-fail only.
 """
 
 from __future__ import annotations
@@ -293,7 +293,7 @@ async def fetch_manmanbuy_history(
     """
     Fetch history trend for canonical product URL.
 
-    Soft-fail: network / 403 / captcha / parse errors → None + log.
+    Soft-fail: network / 402 / 403 / captcha / parse errors → None + log.
     Cached per URL (default 1h). Rate-limited between outbound calls.
     """
     url = (product_url or "").strip()
@@ -347,8 +347,18 @@ async def fetch_manmanbuy_history(
                 },
             )
             text = (resp.text or "").strip()
-            if resp.status_code == 403 or text == "403":
-                logger.warning("manmanbuy api 403 (captcha/ban) for %s", url[:80])
+            # Bare body "402"/"403" is common from datacenter IPs (blocked)
+            if (
+                resp.status_code in (402, 403)
+                or text in ("402", "403")
+                or text.strip() in ("402", "403")
+            ):
+                code = resp.status_code if resp.status_code in (402, 403) else text.strip()[:8]
+                logger.warning(
+                    "manmanbuy api blocked HTTP/body %s (datacenter/captcha) for %s",
+                    code,
+                    url[:80],
+                )
                 return None
             if resp.status_code != 200:
                 logger.warning(

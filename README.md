@@ -152,17 +152,26 @@ cp .env.example .env
 | 命令 | 说明 |
 |------|------|
 | `帮助` | 命令说明 |
-| `监控 <商品链接> [目标价]` | 归一化 URL → 自动识别平台 → 为当前用户添加监控 |
+| `监控 <商品链接> [当前到手价] [目标价]` | 归一化 URL → 自动识别平台 → 添加监控。自动取价失败时可带当前到手价 |
 | `列表` | 我的监控（id / 标题 / 到手价 / 目标） |
 | `取消 <id>` | 删除我的监控 |
 | `历史 <id>` | 近期到手价 + 近 N 天最低/均价/最高与走势（**优先慢慢买**，失败则本地自采） |
 | `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分（含税费，若 >0）+ 历史统计（标注来源）；有图则尝试发图 |
 | `填价 <id> <到手价>` | 手动设到手价（标价=到手价，税费=0）；别名 `改价` / `手动价` |
 | `填价 <id> <标价> <税费>` | 手动设标价+税费；到手价 = 标价 + 税费 − 券 − 满减 |
+| `目标 <id> <价格>` | 只设置/修改目标价 |
+| `登录状态` | 查看京东 Playwright 登录态是否可用 |
 
-示例：`监控 https://item.jd.com/100012043978.html 99`
+示例：
 
-京东全球购自动取价失败时：`填价 12 359.34` 或 `填价 12 318 41.34`
+```text
+监控 https://item.jd.com/100012043978.html 359.34
+监控 https://npcitem.jd.hk/10066842682891.html 359.34 300
+目标 1 300
+填价 1 359.34
+```
+
+语义：创建个数字且自动价为空 → 当作**当前到手价**；自动价已有 → 当作**目标价**。两个数字 → 当前价、目标价。
 
 ## 快速开始（Docker Compose · 单容器）
 
@@ -208,9 +217,14 @@ cd bot && npm install && npm run dev
 ## 配置要点
 
 ```yaml
+scheduler:
+  manualRiskBackoffHours: 12
+
 fetch:
   rateLimitSeconds: 1.5
   priceNoisePercent: 0.5
+  playwright:
+    enabled: false
 
 alerts:
   onBelowTarget: true
@@ -264,7 +278,7 @@ history:
 
 > **关于什么值得买（SMZDM）**：官方开放平台需商务邀请，无自助开通。本项目**不依赖、不声称** SMZDM 官方 API。
 >
-> **慢慢买限制**：非官方接口，可能需验证码 / 返回 403；实现为 best-effort，失败只打日志、不拖垮 Bot。公开脚本参考：[PPsteven/manmanbuy_js_crack](https://github.com/PPsteven/manmanbuy_js_crack)、[mall-monitor](https://github.com/zhangbincheng1997/mall-monitor)、[hamflx gist](https://gist.github.com/hamflx/41cf079dbf81b25d59a1d5da08a2c68d)。
+> **慢慢买限制**：非官方接口；数据中心 IP 常返回裸 **402** / **403** / 验证码。实现为 best-effort，失败只打日志（明确记 blocked）、不拖垮 Bot、不假装取到价。公开脚本参考：[PPsteven/manmanbuy_js_crack](https://github.com/PPsteven/manmanbuy_js_crack)、[mall-monitor](https://github.com/zhangbincheng1997/mall-monitor)、[hamflx gist](https://gist.github.com/hamflx/41cf079dbf81b25d59a1d5da08a2c68d)。
 
 ## 构建超时 / 国内镜像
 
@@ -278,6 +292,19 @@ docker compose build --no-cache && docker compose up -d
 ```
 
 或使用宿主机代理（`host.docker.internal`，不要用容器内 `127.0.0.1`）。
+
+## 取不到价怎么监控
+
+云主机上京东海淘 / `jd.hk` 自动取价常失败（风控页 / SPA 无价）；慢慢买在数据中心 IP 上常直接返回 **裸 `402`/`403`**（本项目会打日志并跳过，**不假装有历史价**）。
+
+**今天就能用的做法（推荐）**：
+
+1. 创建时带价：`监控 <链接> <你在 App 看到的到手价>` 或 `监控 <链接> <当前价> <目标价>`
+2. 事后补价：`填价 <id> <到手价>`（或 `填价 <id> <标价> <税费>`）
+3. 只改目标：`目标 <id> <价格>`
+4. 设好到手价后，目标价/降幅告警才有意义；调度器对风控类 `needs_manual` 会 **backoff 数小时**（默认 12h），避免每分钟空刷京东
+
+可选进阶：启用 Playwright + 扫码登录后，风控页可再试浏览器取价（见下节）。未登录或仍失败时路径不变：继续「填价」。
 
 ## 京东自动取价失败（云 VPS）与代理 / 填价
 
@@ -311,7 +338,7 @@ HTTPS_PROXY=http://host.docker.internal:7890
 
 | 思路 | 公开来源举例 | 本项目 |
 |------|--------------|--------|
-| 浏览器自动化 + 登录 Cookie（Playwright/Puppeteer） | 各类 JD/TB 监控脚本 | **未**在本 PR 引入完整 Playwright；文档记录备选 |
+| 浏览器自动化 + 登录 Cookie（Playwright/Puppeteer） | 各类 JD/TB 监控脚本 | ✅ 可选 `fetch.playwright`；Web「浏览器登录」/ `python -m app.browser_login jd` |
 | 出站 HTTP/SOCKS 代理换出口 IP | mall-monitor 代理池、自建 Clash | ✅ `HTTP_PROXY` / `HTTPS_PROXY` / `JD_HTTP_PROXY` |
 | 电商联盟 / 开放平台官方价 | 淘宝客、京东联盟 | ❌ 需申请与签名；不做 |
 | 手动「填价」兜底 | 运营向工具常见 | ✅ QQ `填价` / `改价` / `手动价` |
@@ -319,6 +346,31 @@ HTTPS_PROXY=http://host.docker.internal:7890
 | 短链多跳展开 + 手淘 URL 归一 | 分享监控类项目 | ✅ `resolve_url` + `h5`/`a.m`/`e.tb.cn` |
 
 实操建议：云 VPS 上京东全球购优先 **填价**；代理可选；历史走势看慢慢买，失败则看本地自采。
+
+
+## Playwright 自动取价（可选）
+
+镜像已包含 Playwright Chromium（体积大约 **+300MB**）。默认 **关闭**。
+
+1. `config.yaml`：
+
+```yaml
+fetch:
+  playwright:
+    enabled: true
+    headless: true
+    storageStatePath: "./data/browser/jd_storage.json"
+    userDataDir: "./data/browser/profile"
+    loginScreenshotPath: "./data/browser/login.png"
+```
+
+2. 首次登录（二选一）：
+   - Web：打开 `/browser/jd` →「开始登录」→ 用京东 App 扫截图里的码 →「刷新状态」
+   - CLI：`docker compose exec app python -m app.browser_login jd --wait 300`
+3. QQ 可发 `登录状态` 查看是否有 pin/thor 等 Cookie 线索
+4. 之后京东 HTTP 风控/SPA 失败时，adapter 会再试 Playwright；仍失败则 `needs_manual` + 请「填价」
+
+`./data` 已挂载，登录态落在 `./data/browser/`。
 
 ## 测试
 

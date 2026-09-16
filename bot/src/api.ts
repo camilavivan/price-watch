@@ -28,6 +28,8 @@ export type Watch = {
   image_url: string | null;
   last_error: string | null;
   history_stats?: HistoryStats | null;
+  /** Server may set when create used user-supplied current price */
+  used_manual_current?: boolean;
 };
 
 async function request<T>(
@@ -73,17 +75,40 @@ export async function listWatches(cfg: BotConfig, openid: string): Promise<Watch
   return data.watches || [];
 }
 
+export type CreateWatchOpts = {
+  targetPrice?: number | null;
+  currentPrice?: number | null;
+  trailingPrice?: number | null;
+  name?: string;
+};
+
 export async function createWatch(
   cfg: BotConfig,
   openid: string,
   url: string,
-  targetPrice?: number,
-  name?: string,
+  opts?: CreateWatchOpts | number,
+  nameLegacy?: string,
 ): Promise<Watch> {
+  // Back-compat: createWatch(cfg, openid, url, targetPrice?, name?)
+  let targetPrice: number | null | undefined;
+  let currentPrice: number | null | undefined;
+  let trailingPrice: number | null | undefined;
+  let name: string | undefined;
+  if (typeof opts === 'number' || opts === undefined || opts === null) {
+    targetPrice = typeof opts === 'number' ? opts : undefined;
+    name = nameLegacy;
+  } else {
+    targetPrice = opts.targetPrice;
+    currentPrice = opts.currentPrice;
+    trailingPrice = opts.trailingPrice;
+    name = opts.name;
+  }
   const data = await request<{ watch: Watch }>(cfg, 'POST', '/api/bot/watches', {
     openid,
     url,
     target_price: targetPrice ?? null,
+    current_price: currentPrice ?? null,
+    trailing_price: trailingPrice ?? null,
     name: name || undefined,
   });
   return data.watch;
@@ -160,3 +185,30 @@ export async function updateWatchPrice(
   return data.watch;
 }
 
+export async function updateWatchTarget(
+  cfg: BotConfig,
+  openid: string,
+  id: number,
+  targetPrice: number,
+): Promise<Watch> {
+  const data = await request<{ watch: Watch }>(cfg, 'POST', `/api/bot/watches/${id}/target`, {
+    openid,
+    target_price: targetPrice,
+  });
+  return data.watch;
+}
+
+export type BrowserLoginStatus = {
+  playwright_enabled: boolean;
+  has_storage_state: boolean;
+  cookie_names?: string[];
+  jd_logged_in_hint?: boolean;
+  storage_path?: string;
+  message?: string;
+};
+
+export async function getBrowserLoginStatus(
+  cfg: BotConfig,
+): Promise<BrowserLoginStatus> {
+  return request<BrowserLoginStatus>(cfg, 'GET', '/api/bot/browser/jd-status');
+}

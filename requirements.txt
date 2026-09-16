@@ -9,3 +9,6 @@ pydantic==2.10.4
 pydantic-settings==2.7.0
 aiosqlite==0.20.0
 sqlalchemy[asyncio]==2.0.36
+
+# Optional JD browser fetch (also: playwright install chromium)
+playwright==1.49.1
