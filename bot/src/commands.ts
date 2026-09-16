@@ -6,6 +6,7 @@ import {
   getHistory,
   getWatch,
   listWatches,
+  updateWatchPrice,
 } from './api.js';
 
 const HELP = `【到手价监控】命令
@@ -15,8 +16,11 @@ const HELP = `【到手价监控】命令
 取消 <id> — 删除我的监控
 历史 <id> — 近期到手价 + 自采统计/走势
 详情 <id> — 链接与到手价明细（也可写「详请」）
+填价 <id> <到手价> — 手动设到手价（标价=到手价，税费=0）；别名：改价 / 手动价
+填价 <id> <标价> <税费> — 手动设标价+税费，到手价=标价+税费−券−满减
 
 说明：可直接粘贴带链接的分享文案（含【京东】/淘口令/粉丝福利购等），机器人会自动提取链接。
+云服务器上京东全球购/jd.hk 常被风控拦截，自动取价失败时请用「填价」。
 告警只推送给添加监控的你本人。历史最低来自本机自采记录（非第三方）。`;
 
 const PLATFORM: Record<string, string> = {
@@ -177,6 +181,28 @@ export function extractTargetPrice(text: string, url?: string | null): number | 
   return undefined;
 }
 
+
+/** Parse 填价/改价/手动价 command. Exported for unit tests. */
+export type FillPriceParsed =
+  | { id: number; mode: 'landing'; landing: number }
+  | { id: number; mode: 'list_tax'; list: number; tax: number };
+
+export function parseFillPriceCommand(text: string): FillPriceParsed | null {
+  const m = text
+    .trim()
+    .match(/^(?:填价|改价|手动价)\s+#?(\d+)\s+(\d+(?:\.\d+)?)(?:\s+(\d+(?:\.\d+)?))?\s*$/);
+  if (!m) return null;
+  const id = Number(m[1]);
+  const a = Number(m[2]);
+  if (!Number.isFinite(id) || id <= 0 || !Number.isFinite(a) || a < 0) return null;
+  if (m[3] !== undefined) {
+    const tax = Number(m[3]);
+    if (!Number.isFinite(tax) || tax < 0) return null;
+    return { id, mode: 'list_tax', list: a, tax };
+  }
+  return { id, mode: 'landing', landing: a };
+}
+
 async function doCreateWatch(
   cfg: BotConfig,
   openid: string,
@@ -206,9 +232,20 @@ async function doCreateWatch(
         `到手价：${fmtPrice(w.landing_price)}\n` +
         `目标价：${fmtPrice(w.target_price)}\n` +
         (w.needs_manual
-          ? w.last_error
-            ? '提示：自动取价失败，可在调试页手动填。'
-            : '提示：该平台可能需在调试页手动更新价格。'
+          ? (() => {
+              const err = w.last_error || '';
+              const blocked = /反爬|风控|拦截|无内嵌价格/.test(err);
+              if (blocked) {
+                return (
+                  `自动取价被京东拦截。请发：填价 ${w.id} <到手价>` +
+                  ` 或 填价 ${w.id} <标价> <税费>`
+                );
+              }
+              if (err) {
+                return `提示：自动取价失败。可用：填价 ${w.id} <到手价>`;
+              }
+              return `提示：该平台可能需手动填价。可用：填价 ${w.id} <到手价>`;
+            })()
           : '已尝试拉取价格。') +
         hint,
       imageUrl: w.image_url,
@@ -313,6 +350,40 @@ export async function handleCommand(
       return { text: body, imageUrl: w.image_url };
     } catch (e) {
       return { text: `查询失败：${e instanceof Error ? e.message : String(e)}` };
+    }
+  }
+
+  {
+    const fill = parseFillPriceCommand(text);
+    if (fill) {
+      try {
+        let w;
+        if (fill.mode === 'landing') {
+          w = await updateWatchPrice(cfg, openid, fill.id, {
+            landing_price: fill.landing,
+          });
+        } else {
+          w = await updateWatchPrice(cfg, openid, fill.id, {
+            list_price: fill.list,
+            tax_amount: fill.tax,
+          });
+        }
+        const taxLine =
+          w.tax_amount != null && Number(w.tax_amount) > 0
+            ? `税费：${fmtPrice(w.tax_amount)}\n`
+            : '';
+        return {
+          text:
+            `已更新 #${w.id} 价格\n` +
+            `${w.name}\n` +
+            `标价：${fmtPrice(w.list_price)}\n` +
+            taxLine +
+            `到手价：${fmtPrice(w.landing_price)}`,
+          imageUrl: w.image_url,
+        };
+      } catch (e) {
+        return { text: `填价失败：${e instanceof Error ? e.message : String(e)}` };
+      }
     }
   }
 

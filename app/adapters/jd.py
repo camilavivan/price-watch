@@ -8,8 +8,6 @@ import re
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
-import httpx
-
 from app.adapters.base import FetchResult
 from app.adapters.generic_html import (
     BROWSER_UA,
@@ -17,6 +15,7 @@ from app.adapters.generic_html import (
     extract_from_html,
     fetch_html,
 )
+from app.adapters.http_util import make_async_client
 from app.adapters.product_meta import enrich_title_image
 from app.adapters.rate_limit import wait_rate_limit
 from app.url_normalize import extract_jd_sku, jd_product_canonical
@@ -107,6 +106,22 @@ _RISK_MARKERS = (
     "risk_handler",
     "privatedomain/risk",
     "bp_bizid",
+    "cfe.m.jd.com/privatedomain",
+)
+
+# Honest user-facing error when cloud VPS cannot auto-price JD (risk / SPA / locked APIs)
+JD_BLOCKED_ERROR = (
+    "京东反爬/风控拦截，服务器无法自动取价；请用「填价」或配置 HTTP 代理后重试"
+)
+
+_SPA_SHELL_MARKERS = (
+    "pageConfig",
+    "window.pageConfig",
+    "wareInfo",
+    "__NEXT_DATA__",
+    "webpackJsonp",
+    'id="app"',
+    "id='app'",
 )
 
 
@@ -143,10 +158,69 @@ def _is_jd_hk(url: str) -> bool:
 
 
 def _looks_like_risk_html(html: str) -> bool:
-    if not html or len(html) < 80:
+    if not html or len(html) < 40:
         return False
-    sample = html[:4000]
-    return any(m in sample for m in _RISK_MARKERS)
+    sample = html[:8000]
+    if any(m in sample for m in _RISK_MARKERS):
+        return True
+    # Title / body often carries 京东验证 even when URL already redirected
+    if "京东验证" in html[:2000] or "<title>京东验证" in html:
+        return True
+    return False
+
+
+def _has_embedded_price_fields(html: str) -> bool:
+    if not html:
+        return False
+    return bool(
+        _PRICE_FIELD_RE.search(html)
+        or _TAX_FIELD_RE.search(html)
+        or _ALLIN_FIELD_RE.search(html)
+        or _GOODS_TEXT_RE.search(html)
+        or _ALLIN_TEXT_RE.search(html)
+    )
+
+
+def _looks_like_spa_shell_no_price(html: str) -> bool:
+    """
+    SPA / empty product shell: pageConfig (or similar) present but no pPrice/taxFee.
+    Typical npcitem/item.jd.hk cloud response ~35KB with no embedded prices.
+    """
+    if not html or len(html) < 200:
+        return False
+    if _looks_like_risk_html(html):
+        return False
+    if _has_embedded_price_fields(html):
+        return False
+    # Parsed note path already ran elsewhere; here only structural hint
+    spaish = any(m in html for m in _SPA_SHELL_MARKERS)
+    # Small-ish shells are common; also treat larger shells with pageConfig and no prices
+    if spaish and (len(html) < 120_000 or "pageConfig" in html):
+        return True
+    return False
+
+
+def _is_unusable_api_body(text: str) -> bool:
+    if not text or len(text) < 8:
+        return True
+    low = text.lower()
+    if '"echo"' in text or "'echo'" in text:
+        if any(
+            s in text or s in low
+            for s in (
+                "does not exist",
+                "no access",
+                "error2",
+                "API does not exist",
+                "not exists",
+            )
+        ):
+            return True
+    if "no access" in low and len(text) < 500:
+        return True
+    if "api does not exist" in low:
+        return True
+    return False
 
 
 def _to_price(val: Any) -> Optional[float]:
@@ -346,7 +420,7 @@ async def _try_price_host(sku: str, host: str) -> Optional[float]:
         "Accept": "application/json, text/javascript, */*;q=0.01",
     }
     try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+        async with make_async_client(timeout=12.0, follow_redirects=True) as client:
             resp = await client.get(api_url, headers=headers)
             if resp.status_code != 200:
                 logger.info("JD %s status=%s sku=%s", host, resp.status_code, sku)
@@ -453,7 +527,7 @@ async def _try_secondary_endpoints(sku: str, *, prefer_hk: bool = False) -> Opti
     for url in urls:
         host = _host(url) or url[:40]
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with make_async_client(timeout=10.0, follow_redirects=True) as client:
                 resp = await client.get(url, headers=headers)
                 if resp.status_code != 200:
                     logger.info("JD secondary %s status=%s sku=%s", host, resp.status_code, sku)
@@ -461,11 +535,9 @@ async def _try_secondary_endpoints(sku: str, *, prefer_hk: bool = False) -> Opti
                 text = resp.text
                 if not text or len(text) < 20:
                     continue
-                # Skip obvious error / missing API payloads
-                if '"echo"' in text and (
-                    "does not exist" in text or "no access" in text or "error2" in text.lower()
-                ):
-                    logger.info("JD secondary %s unusable echo sku=%s", host, sku)
+                # Skip echo / no access / API does not exist payloads
+                if _is_unusable_api_body(text):
+                    logger.info("JD secondary %s unusable API body sku=%s", host, sku)
                     continue
                 try:
                     data = resp.json()
@@ -557,6 +629,17 @@ async def _fetch_page_parse(
             f"风控页:{_host(url)}",
         )
 
+    if _looks_like_spa_shell_no_price(html):
+        # Still try meta for title/image
+        generic_meta = extract_from_html(html, base_url=url)
+        logger.info("JD page SPA shell without price fields url=%s", url[:80])
+        return (
+            {"list_price": None, "tax_amount": None, "note": "页面无内嵌价格（需接口/手动）"},
+            generic_meta.title,
+            generic_meta.image_url,
+            f"SPA无价格:{_host(url)}",
+        )
+
     parsed = parse_jd_price_tax(html)
     generic = extract_from_html(html, base_url=url)
     title = generic.title
@@ -578,7 +661,13 @@ async def _fetch_page_parse(
             if parsed.get("note"):
                 parsed["note"] = str(parsed["note"]) + " + generic 税费"
 
-    status = "ok" if parsed.get("list_price") else f"无价格:{_host(url)}"
+    if parsed.get("list_price"):
+        status = "ok"
+    elif "pageConfig" in html and not _has_embedded_price_fields(html):
+        status = f"SPA无价格:{_host(url)}"
+        parsed["note"] = parsed.get("note") or "页面无内嵌价格（需接口/手动）"
+    else:
+        status = f"无价格:{_host(url)}"
     if parsed.get("list_price"):
         logger.info(
             "JD price found source=html:%s sku_url=%s price=%s tax=%s note=%s",
@@ -621,6 +710,8 @@ class JDAdapter:
         title: Optional[str] = None
         image_url: Optional[str] = None
         tried: list[str] = []
+        saw_risk = False
+        saw_spa = False
 
         # 1) Prefer actual expanded / HK product HTML first (not p.3.cn)
         for page_url in page_urls:
@@ -628,9 +719,10 @@ class JDAdapter:
             parsed, t1, i1, status = await _fetch_page_parse(page_url)
             title = title or t1
             image_url = image_url or i1
-            if status.startswith("DNS") or status.startswith("请求") or status.startswith("风控"):
-                # keep short marker already in tried host list
-                pass
+            if status.startswith("风控"):
+                saw_risk = True
+            if status.startswith("SPA无价格"):
+                saw_spa = True
             if parsed.get("tax_amount") and not tax_amount:
                 tax_amount = float(parsed["tax_amount"] or 0)
             if parsed.get("list_price"):
@@ -682,11 +774,26 @@ class JDAdapter:
             )
 
         tried_s = "、".join(dict.fromkeys(tried))  # preserve order, unique
-        err = (
-            f"京东自动取价失败（已试：{tried_s}）。"
-            "可在调试页手动填写价格；若为海淘/JD.HK 商品请确认 canonical 为 jd.hk 链接。"
+        if saw_risk or saw_spa:
+            extra = []
+            if saw_risk:
+                extra.append("风控验证页")
+            if saw_spa:
+                extra.append("页面无内嵌价格（需接口/手动）")
+            err = JD_BLOCKED_ERROR + f"（已试：{tried_s}；{ '、'.join(extra) }）"
+        else:
+            err = (
+                JD_BLOCKED_ERROR
+                + f"（已试：{tried_s}）。"
+                "若为海淘/JD.HK 商品请确认链接为 jd.hk。"
+            )
+        logger.info(
+            "JD fetch needs_manual sku=%s tried=%s risk=%s spa=%s",
+            sku,
+            tried_s,
+            saw_risk,
+            saw_spa,
         )
-        logger.info("JD fetch needs_manual sku=%s tried=%s", sku, tried_s)
         return FetchResult(
             ok=False,
             needs_manual=True,

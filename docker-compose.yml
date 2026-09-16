@@ -36,6 +36,12 @@ services:
       APP_API_BASE: ${APP_API_BASE:-http://127.0.0.1:8080}
       BOT_NOTIFY_URL: ${BOT_NOTIFY_URL:-http://127.0.0.1:8091/notify}
       BOT_NOTIFY_PORT: "8091"
+      # 运行时出站代理（京东抓取 / 短链展开）；可选 JD_HTTP_PROXY 覆盖
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+      JD_HTTP_PROXY: ${JD_HTTP_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

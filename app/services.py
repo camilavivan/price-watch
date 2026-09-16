@@ -299,10 +299,9 @@ async def apply_price_update(
     product.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     product.last_check_at = product.updated_at
     if source == "manual":
+        # Manual fill (Web / QQ「填价」): clear error + needs_manual so list stops showing 需手动
         product.last_error = None
-        adapter = get_adapter(product.platform)
-        if not adapter.supports_auto:
-            product.needs_manual = True
+        product.needs_manual = False
 
     await record_history(session, product, source=source)
     await session.commit()

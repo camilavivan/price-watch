@@ -753,7 +753,9 @@ async def resolve_url(url: str) -> str:
     used_mobile = False
 
     try:
-        async with httpx.AsyncClient(
+        from app.adapters.http_util import make_async_client
+
+        async with make_async_client(
             timeout=15.0,
             follow_redirects=False,
             headers=_headers_for(_BROWSER_UA),

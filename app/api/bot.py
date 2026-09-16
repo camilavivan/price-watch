@@ -15,7 +15,12 @@ from app.adapters import get_adapter
 from app.config import get_config
 from app.db import get_db
 from app.models import PriceHistory, Product
-from app.services import check_watch, compute_local_history_stats, sparkline
+from app.services import (
+    apply_price_update,
+    check_watch,
+    compute_local_history_stats,
+    sparkline,
+)
 from app.url_normalize import (
     UnknownPlatformError,
     guess_name_from_url,
@@ -41,6 +46,19 @@ class WatchCreate(BaseModel):
     target_price: Optional[float] = None
     name: Optional[str] = None
     platform: Optional[str] = None
+
+
+class WatchPriceUpdate(BaseModel):
+    """QQ「填价」/ Web bot API manual price.
+
+    - landing_price only → list_price=landing, tax=0, landing=landing
+    - list_price (+ optional tax_amount) → landing = list + tax - coupon - full_reduction
+    """
+
+    openid: str = Field(..., min_length=1)
+    landing_price: Optional[float] = None
+    list_price: Optional[float] = None
+    tax_amount: Optional[float] = None
 
 
 def _serialize(p: Product, *, history_stats: dict | None = None) -> dict[str, Any]:
@@ -286,3 +304,59 @@ async def watch_history(
         "history": history,
         "history_stats": _stats_dict(stats),
     }
+
+
+@router.post("/watches/{watch_id}/price")
+@router.patch("/watches/{watch_id}/price")
+async def update_watch_price(
+    watch_id: int,
+    body: WatchPriceUpdate,
+    db: AsyncSession = Depends(get_db),
+    _: None = Depends(_require_admin_token),
+):
+    """Manual price from QQ「填价」/「改价」/「手动价」."""
+    openid = body.openid.strip()
+    product = await db.get(Product, watch_id)
+    if not product or product.owner_openid != openid:
+        raise HTTPException(status_code=404, detail="监控不存在或不属于你")
+
+    landing = body.landing_price
+    list_price = body.list_price
+    tax = body.tax_amount
+
+    if list_price is not None:
+        if list_price < 0:
+            raise HTTPException(status_code=400, detail="标价不能为负")
+        tax_val = float(tax if tax is not None else 0)
+        if tax_val < 0:
+            raise HTTPException(status_code=400, detail="税费不能为负")
+        await apply_price_update(
+            db,
+            product,
+            list_price=float(list_price),
+            tax_amount=tax_val,
+            source="manual",
+            send_alert=True,
+        )
+    elif landing is not None:
+        if landing < 0:
+            raise HTTPException(status_code=400, detail="到手价不能为负")
+        # 填价 <id> <到手价> → list_price=到手价, tax=0, landing=到手价
+        lp = float(landing)
+        await apply_price_update(
+            db,
+            product,
+            list_price=lp,
+            tax_amount=0.0,
+            landing_price=lp,
+            source="manual",
+            send_alert=True,
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="请提供 landing_price，或 list_price（可选 tax_amount）",
+        )
+
+    await db.refresh(product)
+    return {"watch": _serialize(product)}

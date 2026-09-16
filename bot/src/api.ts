@@ -126,3 +126,23 @@ export async function getHistory(
     history_stats: data.history_stats ?? null,
   };
 }
+
+export async function updateWatchPrice(
+  cfg: BotConfig,
+  openid: string,
+  id: number,
+  payload: {
+    landing_price?: number | null;
+    list_price?: number | null;
+    tax_amount?: number | null;
+  },
+): Promise<Watch> {
+  const data = await request<{ watch: Watch }>(cfg, 'POST', `/api/bot/watches/${id}/price`, {
+    openid,
+    landing_price: payload.landing_price ?? null,
+    list_price: payload.list_price ?? null,
+    tax_amount: payload.tax_amount ?? null,
+  });
+  return data.watch;
+}
+

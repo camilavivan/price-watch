@@ -87,7 +87,7 @@ landing = max(list_price + tax_amount - coupon - full_reduction, 0)
 
 | 平台 | 策略 |
 |------|------|
-| 京东 `jd` | `p.3.cn`（忽略 ≤0 / -1）→ 桌面 HTML/JSON（`pPrice`/`taxFee` 等）→ 移动/海淘页 → 可选公开 ware 接口 → 再失败 `needs_manual` |
+| 京东 `jd` | 商品 HTML/JSON（`pPrice`/`taxFee`）→ `p.3.cn` → 公开 ware 接口 → 失败则 `needs_manual`。**云 VPS 上 jd.hk/全球购常被风控或 SPA 壳无内嵌价**，需「填价」或配置出站代理 |
 | 淘宝/天猫 `taobao` | HTML 通用解析（CNY/USD 正则 + 税费标记 + 标题/库存启发式）→ 失败则手动 |
 | 拼多多 `pdd` | 同上 |
 
@@ -142,8 +142,12 @@ cp .env.example .env
 | `取消 <id>` | 删除我的监控 |
 | `历史 <id>` | 最近 N 条自采到手价 + 近 N 天最低/均价/最高与文字走势 |
 | `详情 <id>` / `详请 <id>` | 链接 + 到手价拆分（含税费，若 >0）+ 自采历史统计；有图则尝试发图 |
+| `填价 <id> <到手价>` | 手动设到手价（标价=到手价，税费=0）；别名 `改价` / `手动价` |
+| `填价 <id> <标价> <税费>` | 手动设标价+税费；到手价 = 标价 + 税费 − 券 − 满减 |
 
 示例：`监控 https://item.jd.com/100012043978.html 99`
+
+京东全球购自动取价失败时：`填价 12 359.34` 或 `填价 12 318 41.34`
 
 ## 快速开始（Docker Compose · 单容器）
 
@@ -216,7 +220,7 @@ onebot:
   enabled: false
 ```
 
-环境变量：`QQ_BOT_APP_ID` / `QQ_BOT_SECRET` / `ADMIN_TOKEN` / `DATABASE_URL` / `APP_API_BASE` / `BOT_NOTIFY_URL` / `WEB_PORT`
+环境变量：`QQ_BOT_APP_ID` / `QQ_BOT_SECRET` / `ADMIN_TOKEN` / `DATABASE_URL` / `APP_API_BASE` / `BOT_NOTIFY_URL` / `WEB_PORT` / `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` / `JD_HTTP_PROXY`
 
 ## 自采价格历史
 
@@ -236,6 +240,31 @@ docker compose build --no-cache && docker compose up -d
 ```
 
 或使用宿主机代理（`host.docker.internal`，不要用容器内 `127.0.0.1`）。
+
+## 京东自动取价失败（云 VPS）与代理 / 填价
+
+在腾讯云等 VPS 上，京东全球购 / `*.jd.hk` 经常无法自动取价：
+
+- `mitem.jd.hk` 等会跳到 `cfe.m.jd.com/.../risk_handler`（页面标题「京东验证」）
+- `npcitem.jd.hk` / `item.jd.hk` 常返回 SPA 壳（约 35KB），HTML 内**没有** `pPrice` / `taxFee`
+- `color.jd.hk` / `api.m.jd.com` 返回 `no access` / `API does not exist`（需签名 h5st）
+- 部分环境 `p.3.cn` / `pe.3.cn` DNS 解析失败
+
+因此 HTML 解析在风控/SPA 场景下**不可能成功**。本项目会写入明确的 `last_error`（反爬/风控），并支持：
+
+1. **QQ 手动填价**（推荐兜底）  
+   `填价 <id> <到手价>` 或 `填价 <id> <标价> <税费>`（也可用 `改价` / `手动价`）
+2. **出站 HTTP 代理**（可选，仍可能命中风控）  
+   在 ImmortalWrt / 宿主机 Clash 等开启 HTTP 端口后，写入 `.env`：
+
+```bash
+HTTP_PROXY=http://host.docker.internal:7890
+HTTPS_PROXY=http://host.docker.internal:7890
+# 仅覆盖京东请求时可用：
+# JD_HTTP_PROXY=http://192.168.1.1:7890
+```
+
+`docker-compose.yml` 已把上述变量传入 `app` 容器。代理只改善出口 IP/线路，**不保证**绕过京东验证；失败时请用「填价」。
 
 ## 测试
 

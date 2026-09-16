@@ -6,8 +6,6 @@ import logging
 import re
 from typing import Optional
 
-import httpx
-
 from app.adapters.generic_html import (
     BROWSER_UA,
     DEFAULT_HEADERS,
@@ -63,7 +61,9 @@ async def _jd_from_json_apis(sku: str) -> tuple[Optional[str], Optional[str]]:
         "Referer": f"https://item.jd.com/{sku}.html",
     }
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        from app.adapters.http_util import make_async_client
+
+        async with make_async_client(timeout=10.0, follow_redirects=True) as client:
             # Name from yx.3.cn
             info_url = f"https://yx.3.cn/service/info.action?ids={sku}"
             try:

@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urljoin
 
-import httpx
-
 from app.url_normalize import normalize_zh_text
 
 logger = logging.getLogger(__name__)
@@ -285,8 +283,10 @@ def extract_from_html(html: str, *, base_url: Optional[str] = None) -> HtmlExtra
 
 
 async def fetch_html(url: str, *, timeout: float = 15.0, headers: Optional[dict] = None) -> str:
+    from app.adapters.http_util import make_async_client
+
     hdrs = {**DEFAULT_HEADERS, **(headers or {})}
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+    async with make_async_client(timeout=timeout, follow_redirects=True) as client:
         resp = await client.get(url, headers=hdrs)
         resp.raise_for_status()
         return resp.text
